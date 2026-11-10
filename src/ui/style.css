@@ -1,0 +1,154 @@
+:root {
+  --ink: #e9edf2;
+  --ink-dim: rgba(233, 237, 242, 0.62);
+  --ink-faint: rgba(233, 237, 242, 0.5);
+  --amber: #ffb35c;
+  --font: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #05070a;
+  color: var(--ink);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+#view {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  outline: none;
+}
+
+/* ---------- 开始遮罩 ---------- */
+#intro {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  padding: clamp(24px, 6vw, 88px);
+  background:
+    linear-gradient(to top, rgba(4, 6, 9, 0.92) 0%, rgba(4, 6, 9, 0.55) 45%, rgba(4, 6, 9, 0.18) 100%);
+  transition: opacity 1.1s ease, visibility 1.1s;
+}
+#intro.gone { opacity: 0; visibility: hidden; pointer-events: none; }
+
+.intro-inner { max-width: 620px; }
+
+.eyebrow {
+  margin: 0 0 14px;
+  font-size: 12px;
+  letter-spacing: 0.32em;
+  color: var(--amber);
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(44px, 7.2vw, 92px);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.05;
+}
+
+.lede {
+  margin: 18px 0 30px;
+  font-size: 16px;
+  color: var(--ink-dim);
+  letter-spacing: 0.04em;
+}
+
+#start {
+  appearance: none;
+  border: 1px solid rgba(255, 179, 92, 0.75);
+  background: rgba(255, 179, 92, 0.1);
+  color: #ffd9a8;
+  font: inherit;
+  font-size: 16px;
+  letter-spacing: 0.3em;
+  padding: 14px 34px 14px 38px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+#start:hover, #start:focus-visible { background: var(--amber); color: #17100a; outline: none; }
+#start[disabled] { opacity: 0.5; cursor: progress; }
+
+.keys {
+  margin: 38px 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 7px 28px;
+  font-size: 13px;
+}
+.keys div { display: flex; gap: 14px; align-items: baseline; }
+.keys dt {
+  flex: 0 0 62px;
+  color: var(--ink);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.keys dd { margin: 0; color: var(--ink-faint); }
+
+/* ---------- 状态提示 ---------- */
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 34px;
+  transform: translateX(-50%);
+  padding: 9px 20px;
+  font-size: 14px;
+  letter-spacing: 0.14em;
+  color: var(--ink);
+  background: rgba(8, 10, 14, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+  white-space: nowrap;
+}
+#toast.show { opacity: 1; }
+
+#help {
+  position: fixed;
+  right: 22px;
+  top: 22px;
+  padding: 16px 20px;
+  font-size: 12.5px;
+  line-height: 1.95;
+  color: var(--ink-dim);
+  background: rgba(8, 10, 14, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 2px;
+  backdrop-filter: blur(8px);
+  white-space: pre;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, var(--font);
+}
+
+#fatal {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 40px;
+  background: #05070a;
+  color: #ffb4a8;
+  font-size: 15px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  text-align: center;
+}
+#fatal[hidden], #help[hidden] { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  #intro, #toast { transition: none; }
+}

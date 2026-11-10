@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>雨中行车 · Rain Drive</title>
+    <link rel="stylesheet" href="/src/ui/style.css" />
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+
+    <!-- 开始遮罩：点击后解锁音频并开始 -->
+    <div id="intro">
+      <div class="intro-inner">
+        <p class="eyebrow">RAIN DRIVE · 沉浸式驾驶</p>
+        <h1>雨中行车</h1>
+        <p class="lede">傍晚，城市高架，大雨。戴上耳机效果更好。</p>
+        <button id="start" type="button">开始驾驶</button>
+        <dl class="keys">
+          <div><dt>W / S</dt><dd>加速 / 刹车（巡航时调节车速）</dd></div>
+          <div><dt>A / D</dt><dd>转向（巡航时变道）</dd></div>
+          <div><dt>F</dt><dd>自动巡航 开 / 关</dd></div>
+          <div><dt>E</dt><dd>雨刮档位</dd></div>
+          <div><dt>R</dt><dd>雨量</dd></div>
+          <div><dt>T</dt><dd>时间：傍晚 / 夜晚 / 白天</dd></div>
+          <div><dt>L</dt><dd>远光灯</dd></div>
+          <div><dt>鼠标</dt><dd>转头环顾</dd></div>
+          <div><dt>M · H</dt><dd>静音 · 显示帮助</dd></div>
+        </dl>
+      </div>
+    </div>
+
+    <div id="toast" aria-live="polite"></div>
+    <div id="help" hidden></div>
+    <div id="fatal" hidden></div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
