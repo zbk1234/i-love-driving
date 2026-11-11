@@ -131,7 +131,7 @@ export function createCabin() {
 
   // ------------------------------------------------------------ 方向盘
   const wheelPivot = new THREE.Group();
-  wheelPivot.position.set(-0.36, 0.89, -0.36);
+  wheelPivot.position.set(-0.36, 0.855, -0.36); // 轮缘上沿刚好在风挡下沿的视线之下，不挡路面
   wheelPivot.rotation.x = -24 * DEG; // 盘面上沿向前倾
   group.add(wheelPivot);
   const wheel = new THREE.Group();

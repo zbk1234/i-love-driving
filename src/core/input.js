@@ -1,6 +1,6 @@
 // 键盘 + 鼠标。鼠标不锁定指针：光标离屏幕中心越远，头转得越多，移回中间就回正。
 
-const PREVENT = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab']);
+const PREVENT = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab', 'PageUp', 'PageDown']);
 
 export class Input {
   constructor() {

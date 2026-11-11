@@ -162,11 +162,29 @@ function main() {
     'T         傍晚 / 夜晚 / 白天',
     'L         远光灯',
     'K         来一道闪电',
+    'PgUp/PgDn 座椅升 / 降',
     'M         静音      H  关闭帮助',
   ].join('\n');
 
   let highBeam = false;
   let started = false;
+  // 座椅高度微调（相对默认坐姿，米）。坐多高是很主观的事，所以记在本机，下次打开还是这个高度
+  let seatDy = 0;
+  try {
+    seatDy = clamp(Number(localStorage.getItem('rd.seat')) || 0, -0.06, 0.08);
+  } catch {
+    /* 隐私模式下 localStorage 不可用，忽略 */
+  }
+  const adjustSeat = (d) => {
+    seatDy = clamp(Math.round((seatDy + d) * 100) / 100, -0.06, 0.08);
+    try {
+      localStorage.setItem('rd.seat', String(seatDy));
+    } catch {
+      /* 同上 */
+    }
+    const cm = Math.round(seatDy * 100);
+    toast(`座椅高度 ${cm > 0 ? '+' : ''}${cm} cm`);
+  };
 
   input.onPress = (code) => {
     if (!started) {
@@ -200,6 +218,12 @@ function main() {
         break;
       case 'KeyH':
         helpEl.hidden = !helpEl.hidden;
+        break;
+      case 'PageUp':
+        adjustSeat(0.01);
+        break;
+      case 'PageDown':
+        adjustSeat(-0.01);
         break;
       case 'KeyA':
       case 'ArrowLeft':
@@ -310,7 +334,7 @@ function main() {
     const lk = 1 - Math.exp(-dt / 0.11);
     lookYaw += (tYaw - lookYaw) * lk;
     lookPitch += (tPitch - lookPitch) * lk;
-    tmpV.set(CAR.EYE[0] + vehicle.latAcc * 0.004, CAR.EYE[1] - bounceY * 0.35 + Math.sin(time * 0.9) * 0.0015, CAR.EYE[2] + vehicle.accel * 0.006);
+    tmpV.set(CAR.EYE[0] + vehicle.latAcc * 0.004, CAR.EYE[1] + seatDy - bounceY * 0.35 + Math.sin(time * 0.9) * 0.0015, CAR.EYE[2] + vehicle.accel * 0.006);
     mirrors.update(carMatrix, tmpV); // 三面后视镜按眼睛位置重算反射视角
     camera.position.copy(tmpV).applyMatrix4(carMatrix);
     euler.set(lookPitch, lookYaw, 0);
