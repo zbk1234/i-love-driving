@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build --mode music",
+    "build:music": "vite build --mode music",
     "preview": "vite preview"
   },
   "dependencies": {

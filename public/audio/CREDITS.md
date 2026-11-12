@@ -6,6 +6,7 @@
 | `rain.mp3` | [Freesound #648913 · rain on a car](https://freesound.org/people/hemogobblin/sounds/648913/) | hemogobblin | [CC0 1.0](http://creativecommons.org/publicdomain/zero/1.0/) |
 | `pass.mp3` | [Freesound #775045 · Car passing](https://freesound.org/people/Otto_H%C3%A4m%C3%A4l%C3%A4inen/sounds/775045/) | Otto_Hämäläinen | [CC0 1.0](http://creativecommons.org/publicdomain/zero/1.0/) |
 | `blinker.mp3` | [Freesound #23968 · 061018_indicatorsR_mkh30-40_t002_ab_xtr.wav](https://freesound.org/people/ermine/sounds/23968/) | ermine | [CC BY-NC 3.0](http://creativecommons.org/licenses/by-nc/3.0/)（须署名、不得商用；作者另注明不得作为素材库二次分发） |
+| `music/stan.mp3` | 用户提供的本地文件 `S.T.A.N.mp3`，原样收录、未转码 | 未提供 | 用户声明不涉及版权、可随项目发布；未提供单独的作者或许可证信息 |
 
 `wiper.mp3` 的处理：截取原始文件 1.36 s ~ 10.50 s（7 个完整往复周期），首尾 10 ms 淡入淡出，峰值归一化到 -1 dBFS，48 kHz 立体声 128 kbps MP3。
 换向点的时刻记录在 `src/core/audio.js` 的 `WIPER` 常量里；替换这个文件时要一并重新标注。

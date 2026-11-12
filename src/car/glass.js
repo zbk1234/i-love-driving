@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GLASS, WIPERS } from '../config.js';
+import { GLASS, WIPERS, WINDOW } from '../config.js';
 import { G } from '../core/globals.js';
 
 // 车窗上的雨。玻璃是真实的 3D 网格（取自车模），水珠固定在「玻璃坐标」里，所以转头时水珠是贴在玻璃上的。
@@ -9,6 +9,8 @@ import { G } from '../core/globals.js';
 //   · 雨刮 = 时间函数：解析地算出每个像素「距上次被刮过了几秒」，只显示这之后才落下的水珠
 
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
+// 电动车窗「各高度上次被密封条刮过的时刻」分成多少段记录（段与段之间线性插值）
+export const SEAL_N = 48;
 
 // 前挡曲面（对车模风挡的拟合）：玻璃坐标 (gx, gy) → 车体局部坐标
 export function glassPoint(gx, gy, out = new THREE.Vector3()) {
@@ -38,6 +40,7 @@ export function glassNormal(gx, gy, out = new THREE.Vector3()) {
 
 // 把车模的玻璃网格（车体局部坐标，一个网格里包含全部车窗）拆成 前 / 左 / 右 / 后 四组，
 // 并给每个顶点算出玻璃坐标 aG：x 永远指向「从车内看」的屏幕右侧，y 沿玻璃向上，单位米。
+// 左前门玻璃的顶点另有 aWin = 1（能升降），它沿玻璃斜面向下的方向记在 left.userData.down。
 export function createGlassGeometries(source) {
   const pos = source.attributes.position;
   const index = source.index;
@@ -69,6 +72,7 @@ export function createGlassGeometries(source) {
   for (const key of Object.keys(groups)) {
     const p = groups[key];
     const g = new Float32Array((p.length / 3) * 2);
+    const win = new Float32Array(p.length / 3);
     // 沿玻璃向上的距离 = 高度差 / 玻璃的倾斜程度
     const ny = nSum[key].normalize().y;
     const rise = Math.sqrt(Math.max(1 - ny * ny, 1e-4));
@@ -85,17 +89,23 @@ export function createGlassGeometries(source) {
       } else {
         g[j] = key === 'left' ? -z : key === 'right' ? z : -x;
         g[j + 1] = (y - yMin) / rise;
+        if (key === 'left' && g[j] > WINDOW.X0) win[j / 2] = 1;
       }
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
     geo.setAttribute('aG', new THREE.BufferAttribute(g, 2));
+    geo.setAttribute('aWin', new THREE.BufferAttribute(win, 1));
+    // 玻璃面内、指向正下方的那个方向：沿它移动 d 米，玻璃坐标 gy 正好减少 d
+    geo.userData.down = nSum[key].clone().multiplyScalar(ny).sub(new THREE.Vector3(0, 1, 0)).normalize();
     out[key] = geo;
   }
   return out;
 }
 
 const FRAG = /* glsl */ `
+#define SEAL_N ${SEAL_N}
+#define SEAL_H ${WINDOW.TRAVEL.toFixed(4)}
 uniform sampler2D tScene;
 uniform sampler2D tBlurA;
 uniform sampler2D tBlurB;
@@ -111,6 +121,7 @@ uniform float uHasWipers;
 uniform vec4 uWpA;        // 雨刮轴心.xy、刮片内外半径
 uniform vec4 uWpB;
 uniform vec4 uWpAng;      // 两支雨刮的起止角
+uniform float uEdgeFlow;  // 刮片外沿水埂上的水受到的向下的力（负数是被气流顶着往上，见 dropsim.js 的 edgeFlow）
 uniform vec3 uTint;
 uniform float uLens;
 uniform float uWet;       // 水膜厚度系数：前挡 1，侧窗薄一些
@@ -120,7 +131,11 @@ uniform float uSim;        // 是否有水珠模拟（dropsim.js）
 uniform sampler2D tDrops;  // 模拟出来的大水珠：xy = 水珠内归一化位置 × 遮罩，a = 遮罩
 uniform sampler2D tClean;  // 最近一次被滑过的水珠「洗干净」的时刻
 uniform vec4 uSimRect;     // 模拟覆盖的玻璃坐标范围：x0, y0, 1/宽, 1/高
+uniform vec4 uWin;         // 电动车窗：下降方向.xyz（车体坐标）、已降下的距离
+uniform vec2 uSill;        // 门槛密封条：gy = x + y·gx
+uniform float uSeal[SEAL_N]; // 玻璃上各高度（0 ~ SEAL_H）最近一次经过密封条的时刻
 varying vec2 vG;
+varying float vWin;
 
 float hash11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
 float hash21(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
@@ -130,9 +145,11 @@ vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)
 //   bead  = 被刮片聚拢起来的水（刮片前面推着走的水脊、刮片外端甩在玻璃上的弧形水线），
 //           格式和水珠一样：xy 是归一化的表面坡度方向，z 是遮罩
 //   smear = 刚刮过的地方残留的极薄条纹造成的折射偏移（沿刮片扫过的弧线方向排列，零点几秒就流平）
-float wipeSince(vec2 g, vec4 wp, vec2 ang, out vec3 bead, out vec2 smear) {
+//   arc   = bead 是外端甩出的那条弧形水线（它留在玻璃上，会被另一支刮片刮走）时为 1
+float wipeSince(vec2 g, vec4 wp, vec2 ang, out vec3 bead, out vec2 smear, out float arc) {
   bead = vec3(0.0);
   smear = vec2(0.0);
+  arc = 0.0;
   vec2 d = g - wp.xy;
   float r = length(d);
   float f = (atan(d.y, d.x) - ang.x) / (ang.y - ang.x);
@@ -169,13 +186,80 @@ float wipeSince(vec2 g, vec4 wp, vec2 ang, out vec3 bead, out vec2 smear) {
     float n = 0.5 + 0.5 * sin(f * 131.0 + 4.0 * sin(f * 37.0));
     float keep = smoothstep(s * 0.11, s * 0.11 + 0.12, n);
     float m = sin(3.14159 * e) * keep;
-    if (m > bead.z) bead = vec3(-er * cos(3.14159 * e) * 0.9, m);
+    if (m > bead.z) {
+      bead = vec3(-er * cos(3.14159 * e) * 0.9, m);
+      arc = 1.0;
+    }
   }
 
   // ---- 刮后的细条纹
   float lines = sin(r * 4100.0 + 3.0 * sin(r * 310.0)) * 0.6 + sin(r * 1730.0 + 1.7) * 0.4;
   smear = er * lines * 0.0045 * exp(-s / 0.4);
   return s;
+}
+
+// 刮片在外端停住、掉头时，前面推着的那道水脊被留在了扫过范围的边上：一条贴着边界的水埂，
+// 越往刮片外端水越多，几秒内越来越细、断成一串水珠（堆得最多的那些由 dropsim 拽着淌走）。
+// st = 距上次掉头过了几秒；返回格式和 bead 一样
+vec3 wipeEdge(vec2 g, vec4 wp, vec2 ang, out float st) {
+  st = 1e4;
+  vec2 d = g - wp.xy;
+  float r = length(d);
+  if (r < wp.z || r > wp.w) return vec3(0.0);
+  float q = (atan(d.y, d.x) - ang.y) * r; // 离扫过范围外沿的距离（米），>0 在外侧
+  if (q < 0.0 || q > 0.03) return vec3(0.0);
+  float D = uWipe.y;
+  st = uWipe.x >= 0.5 * D ? uWipe.x - 0.5 * D : uWipe.x + uWipe.z - 0.5 * D;
+  if (st > 7.0) return vec3(0.0);
+  // 掉头那一刻和水脊一样粗（接得上），然后水往下淌、水埂慢慢变细
+  float w = 0.0105 * (0.75 + 0.45 * sin(r * 61.0 + D * 4.5) * sin(r * 23.0 - 1.3));
+  w *= mix(0.75, 1.15, (r - wp.z) / (wp.w - wp.z)) * (1.0 - 0.7 * smoothstep(0.4, 6.0, st));
+  // 顺着水埂淌下去的水：一个个鼓包沿边缘往下走（外沿几乎是竖的，往下 = r 变小），
+  // 速度和方向跟模拟里水埂上的水珠一致：高速时被气流顶着往上
+  float pr = (r + 0.05 * st * clamp(uEdgeFlow, -1.2, 1.2)) / 0.05;
+  float lump = exp(-pow((fract(pr) - 0.5) * 4.5, 2.0)) * step(0.45, hash11(floor(pr) + D)) * smoothstep(0.1, 0.6, st);
+  w *= 1.0 + 0.7 * lump;
+  float k = (q - 0.007) / w;
+  if (k <= 0.0 || k >= 1.0) return vec3(0.0);
+  // 断成水珠：细的地方先断开，剩下一颗颗越来越稀；往下淌的鼓包要比水埂本身留得久
+  float n = 0.5 + 0.5 * sin(r * 260.0 + 5.0 * sin(r * 41.0));
+  float keep = max(smoothstep(st * 0.14 - 0.15, st * 0.14, n), lump) * (1.0 - smoothstep(4.5, 7.0, st));
+  vec2 er = d / r;
+  return vec3(vec2(-er.y, er.x) * cos(3.14159 * k) * 0.92, sin(3.14159 * k) * keep);
+}
+
+// 电动车窗。门槛上的密封条就是一根不动的水平刮片：玻璃升降时从它下面穿过，水全被刮掉。
+// h = 这一点离玻璃下沿的高度，返回它距上次被刮过的秒数（经过的时刻由 window.js 逐段记录）
+float sealSince(float h) {
+  float k = clamp(h / SEAL_H, 0.0, 1.0) * float(SEAL_N - 1);
+  int i = int(k);
+  float t = mix(uSeal[i], uSeal[min(i + 1, SEAL_N - 1)], fract(k));
+  return max(uTime - t, 0.0);
+}
+
+// 密封条刮过后的竖向水痕。胶条不是处处一样贴紧，漏过去的水拉成一道道竖直的细水线，
+// 几秒内断成一串串小水珠、再慢慢干掉；刚刮过的一两秒里整片玻璃还带着极薄的竖纹（smear）。
+// 返回格式和水珠一样：(归一化位置.xy × 遮罩, 遮罩)
+vec3 sealStreaks(vec2 g, float s, out vec2 smear) {
+  float lines = sin(g.x * 3900.0 + 3.0 * sin(g.x * 290.0)) * 0.6 + sin(g.x * 1650.0 + 1.7) * 0.4;
+  smear = vec2(lines * 0.004 * exp(-s / 1.5), 0.0);
+  float q = g.x / 0.009;
+  float col = floor(q);
+  float h = hash11(col * 7.31 + 3.0);
+  float life = mix(6.0, 16.0, hash11(col * 1.93 + 5.0));
+  if (h > 0.4 || s > life) return vec3(0.0);
+  // 水线不是笔直的，也时断时续
+  float n = sin(g.y * 33.0 + h * 50.0) * 0.6 + sin(g.y * 87.0 + h * 21.0) * 0.4;
+  if (n < -0.35 + h) return vec3(0.0);
+  float c = (hash11(col * 2.71) - 0.5) * 0.3 + 0.06 * sin(g.y * 21.0 + h * 40.0) + 0.025 * sin(g.y * 67.0 + h * 13.0);
+  // 断成水珠：沿线周期性地鼓起和变细，时间越久变细的地方越细，最后只剩一颗颗小珠
+  float ph = 6.2831853 * (g.y / 0.0055 + h * 7.0);
+  float br = smoothstep(0.5, 5.0, s);
+  float w = mix(0.07, 0.15, hash11(col * 5.3 + 1.0)) * mix(1.0, (0.5 + 0.5 * cos(ph)) * 1.5, br);
+  w *= 1.0 - smoothstep(life * 0.5, life, s);
+  float dx = (fract(q) - 0.5 - c) / max(w, 1e-3);
+  float m = smoothstep(1.0, 0.75, abs(dx)) * step(0.004, w);
+  return vec3(vec2(dx, -sin(ph) * 0.5 * br) * m, m * 0.9);
 }
 
 // 静止水珠。每格最多一颗，寿命到了原地换一颗；只有「出生晚于上次刮刷」的才画出来。
@@ -248,7 +332,15 @@ void main() {
   vec2 g = vG;
   vec2 suv = gl_FragCoord.xy / uRes;
 
-  float since = 1e4;
+  // ---- 电动车窗：降进车门里的那部分不画；升起来的玻璃刚被密封条从下往上刮过一遍
+  float sealS = 1e4;
+  if (vWin > 0.5) {
+    float h = g.y - uSill.x - uSill.y * g.x;
+    if (uWin.w > 0.0 && h < uWin.w) discard;
+    sealS = sealSince(h);
+  }
+
+  float since = sealS;
   vec3 bead = vec3(0.0);
   vec2 smear = vec2(0.0);
   if (uHasWipers > 0.5) {
@@ -256,11 +348,25 @@ void main() {
     vec3 b2;
     vec2 m1;
     vec2 m2;
-    float s1 = wipeSince(g, uWpA, uWpAng.xy, b1, m1);
-    float s2 = wipeSince(g, uWpB, uWpAng.zw, b2, m2);
-    since = min(s1, s2);
+    float a1;
+    float a2;
+    float s1 = wipeSince(g, uWpA, uWpAng.xy, b1, m1, a1);
+    float s2 = wipeSince(g, uWpB, uWpAng.zw, b2, m2, a2);
+    // 外端水线留下之后又被另一支刮片扫过的就没了（主驾那条弧的下半段落在副驾的扫形里）
+    if (a1 > 0.5 && s2 < s1) b1 = vec3(0.0);
+    if (a2 > 0.5 && s1 < s2) b2 = vec3(0.0);
+    since = min(since, min(s1, s2));
     bead = b1.z > b2.z ? b1 : b2;
     smear = s1 < s2 ? m1 : m2;
+    // 外沿留下的水埂；留下之后又被另一支刮片扫过的就没了（副驾那支的外沿落在主驾的扫形里）
+    float t1;
+    float t2;
+    vec3 e1 = wipeEdge(g, uWpA, uWpAng.xy, t1);
+    vec3 e2 = wipeEdge(g, uWpB, uWpAng.zw, t2);
+    if (s2 < t1) e1 = vec3(0.0);
+    if (s1 < t2) e2 = vec3(0.0);
+    vec3 e = e1.z > e2.z ? e1 : e2;
+    if (e.z > bead.z) bead = e;
   }
   float rain = uRain;
   vec4 nf = texture2D(tNoise, g * 7.0);
@@ -311,6 +417,15 @@ void main() {
     acc.z = max(acc.z, w);
     trail = max(trail, Sl.w * uSlideB.w);
   }
+  }
+
+  // ---- 密封条留下的竖向水痕
+  if (sealS < 16.0) {
+    vec2 sm;
+    vec3 st = sealStreaks(g, sealS, sm);
+    acc.xy = mix(acc.xy, st.xy, st.z);
+    acc.z = max(acc.z, st.z);
+    smear += sm;
   }
 
   // ---- 雨刮聚拢的水盖在最上面
@@ -376,6 +491,7 @@ export function createGlassMaterial({ wipers = false, tint = [0.86, 0.9, 0.88], 
       uWpA: { value: new THREE.Vector4(wa.pivot[0], wa.pivot[1], wa.rIn, wa.rOut) },
       uWpB: { value: new THREE.Vector4(wb.pivot[0], wb.pivot[1], wb.rIn, wb.rOut) },
       uWpAng: { value: new THREE.Vector4(wa.a0, wa.a1, wb.a0, wb.a1) },
+      uEdgeFlow: { value: 1 },
       uTint: { value: new THREE.Color(...tint) },
       uLens: { value: lens },
       uWet: { value: wet },
@@ -385,13 +501,21 @@ export function createGlassMaterial({ wipers = false, tint = [0.86, 0.9, 0.88], 
       tDrops: { value: null },
       tClean: { value: null },
       uSimRect: { value: new THREE.Vector4(0, 0, 1, 1) },
+      uWin: { value: new THREE.Vector4(0, -1, 0, 0) },
+      uSill: { value: new THREE.Vector2(...WINDOW.SILL) },
+      uSeal: { value: new Float32Array(SEAL_N).fill(-1e4) },
     },
     vertexShader: /* glsl */ `
       attribute vec2 aG;
+      attribute float aWin;
+      uniform vec4 uWin;
       varying vec2 vG;
+      varying float vWin;
       void main() {
         vG = aG;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vWin = aWin;
+        vec3 p = position + uWin.xyz * (uWin.w * aWin);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
       }
     `,
     fragmentShader: FRAG,

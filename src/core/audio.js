@@ -150,6 +150,24 @@ export class AudioEngine {
     this.gWind = gain();
     chain(loop(this.noise), this.fWind, this.gWind, this.master);
 
+    // ---- 开着车窗时才有的：窗外的雨（打在路面、车身、门槛上的细碎沙沙声）和灌进来的风，都偏在左耳
+    const winPan = ctx.createStereoPanner();
+    winPan.pan.value = -0.55;
+    winPan.connect(this.master);
+    this.gRainOut = gain();
+    chain(loop(this.noise), filt('highpass', 2200, 0.5), filt('peaking', 5200, 0.8), this.gRainOut, winPan);
+    this.fWindOut = filt('lowpass', 600, 0.6);
+    this.gWindOut = gain();
+    chain(loop(this.noise), this.fWindOut, this.gWindOut, winPan);
+    // 车窗电机的嗡嗡声（藏在车门里，隔着门板只剩中低频）
+    this.oMotor = ctx.createOscillator();
+    this.oMotor.type = 'sawtooth';
+    this.oMotor.frequency.value = 110;
+    this.gMotor = gain();
+    chain(this.oMotor, filt('bandpass', 380, 1.2), this.gMotor, winPan);
+    this.oMotor.start();
+    this._win = 0;
+
     // ---- 发动机（隔着防火墙听到的低沉嗡声）
     this.osc1 = ctx.createOscillator();
     this.osc1.type = 'sawtooth';
@@ -168,9 +186,10 @@ export class AudioEngine {
     this.gPass = gain();
     this.pan = ctx.createStereoPanner();
     chain(loop(this.noise), this.fPass, this.gPass, this.pan, this.master);
-    // 驶过的实录：隔着车身听，压掉一些高频
+    // 驶过的实录：隔着车身听，压掉一些高频（开着车窗时又响又亮）
     this.gPassRec = gain(0.55);
-    chain(this.gPassRec, filt('lowpass', 2800, 0.5), this.master);
+    this.fPassRec = filt('lowpass', 2800, 0.5);
+    chain(this.gPassRec, this.fPassRec, this.master);
     this.passBuf = null;
     this._passN = 0;
     this._passFile
@@ -276,6 +295,7 @@ export class AudioEngine {
     if (this.ctx) this.master.gain.setTargetAtTime(m ? 0 : 0.9, this.ctx.currentTime, 0.15);
   }
 
+  // s.window：主驾车窗开了多少（0~1）；s.winMotor：车窗电机 1 在升、-1 在降、0 停
   update(s) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
@@ -283,31 +303,52 @@ export class AudioEngine {
     const v = s.speed;
     const r = s.rain;
     const vn = Math.min(v / 33, 1);
+    // 窗缝一开声音就进来了：开到三分之一时已经有大半效果
+    const w = Math.min((s.window || 0) * 1.6, 1) ** 0.8;
+    this._win = w;
 
-    // 雨声：响度按感知曲线跟雨量走，车速越高打在车上的雨越密；大雨时叠上第三路、放开高频
-    set(this.gRain.gain, 0.3 * r ** 0.7 * (0.8 + 0.3 * vn));
+    // 雨声：响度按感知曲线跟雨量走，车速越高打在车上的雨越密；大雨时叠上第三路、放开高频。
+    // 开窗后不再隔着车身：更响、更亮，再叠上窗外的沙沙声
+    set(this.gRain.gain, 0.3 * r ** 0.7 * (0.8 + 0.3 * vn) * (1 + 0.9 * w));
     set(this.gRainDense.gain, Math.min(Math.max((r - 0.45) / 0.45, 0), 1) * 0.8);
-    set(this.fRain.frequency, 1800 + 7000 * r);
+    set(this.fRain.frequency, 1800 + 7000 * r + 6000 * w);
+    set(this.gRainOut.gain, w * r ** 0.7 * (0.1 + 0.08 * vn), 0.3);
 
-    set(this.gRoad.gain, 0.03 + vn * 0.4);
+    set(this.gRoad.gain, (0.03 + vn * 0.4) * (1 + 0.35 * w));
     set(this.fRoad.frequency, 90 + v * 5);
-    set(this.gTyre.gain, vn ** 1.5 * 0.16 * (0.4 + 0.6 * r));
+    set(this.gTyre.gain, vn ** 1.5 * 0.16 * (0.4 + 0.6 * r) * (1 + 1.4 * w));
     set(this.fTyre.frequency, 1700 + v * 45);
-    set(this.gWind.gain, Math.min(v / 40, 1) ** 2 * 0.2);
+    set(this.gWind.gain, Math.min(v / 40, 1) ** 2 * 0.2 * (1 + 1.5 * w));
     set(this.fWind.frequency, 280 + v * 11);
+    // 灌进窗里的风：车速越高越响、越尖，还带着一点嗡嗡的轰鸣
+    set(this.gWindOut.gain, w * Math.min(v / 30, 1) ** 2 * 0.35 * (0.85 + 0.15 * Math.sin(t * 7.3) * Math.sin(t * 2.1)), 0.08);
+    set(this.fWindOut.frequency, 250 + v * 22);
 
     const f0 = (s.rpm / 60) * 2;
     set(this.osc1.frequency, f0, 0.08);
     set(this.osc2.frequency, f0 / 2, 0.08);
     set(this.fEng.frequency, 120 + s.rpm * 0.055);
-    set(this.gEng.gain, 0.03 + s.throttle * 0.035);
+    set(this.gEng.gain, (0.03 + s.throttle * 0.035) * (1 + 0.3 * w));
 
-    set(this.gPass.gain, s.passGain * 0.5, 0.08);
+    set(this.gPass.gain, s.passGain * 0.5 * (1 + 1.2 * w), 0.08);
     set(this.fPass.frequency, 450 + s.passGain * 700, 0.08);
     set(this.pan.pan, s.passPan, 0.1);
+    set(this.gPassRec.gain, 0.55 * (1 + 1.3 * w));
+    set(this.fPassRec.frequency, 2800 + 9000 * w);
     set(this.gScrape.gain, s.scrape * 0.3, 0.05);
     // 素材本身带着雨声，干玻璃上手动开雨刮时压低一些
     set(this.gWiper.gain, 0.5 * (0.55 + 0.45 * Math.min(r * 1.5, 1)));
+    // 电机：往上要托着玻璃的重量，吃力一些、音调低
+    const mo = s.winMotor || 0;
+    set(this.gMotor.gain, mo ? 0.05 : 0, 0.03);
+    set(this.oMotor.frequency, mo > 0 ? 96 : 122, 0.1);
+  }
+
+  // 车窗升到顶 / 降到底：玻璃撞上限位的一声闷响
+  windowStop(closed) {
+    if (!this.ctx) return;
+    this._thud(closed ? 85 : 70, 40, 0.09, closed ? 0.2 : 0.12);
+    this._burst(0.04, 'bandpass', 700, 1, closed ? 0.06 : 0.03);
   }
 
   // 一次性的噪声脉冲
@@ -493,6 +534,7 @@ export class AudioEngine {
     const ctx = this.ctx;
     const t = ctx.currentTime + delay;
     const dur = 4.5 + Math.random() * 3;
+    strength *= 1 + 0.5 * this._win; // 开着窗听得更清楚
     const src = ctx.createBufferSource();
     src.buffer = this.noise;
     src.loop = true;

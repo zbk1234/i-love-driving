@@ -17,6 +17,15 @@ import { G } from '../core/globals.js';
 
 const MAX = 2048;
 const CELL = 0.012; // 合并检测用的空间哈希格距
+const EDGE_BINS = 24; // 刮片沿半径分成几段，各自记下这一趟推了多少水
+const R_MAX = 0.005; // 水珠半径的上限：再大的挂不住、也聚不起来，多出来的水顺着水痕流走了
+const EDGE_R = 0.0036; // 水埂上一颗水珠最大的半径，水多就多分几颗
+const EDGE_G = 0.6; // 水埂是一整道厚水膜，比零散水珠重：额外的重力（以重力 1.0 为基准）
+const EDGE_SIDE = 0.4; // 水埂上的水顺着风挡弯过去的弧面往车身两侧偏（主驾这边往左），不会倒淌回刮过的地方
+const EDGE_LIFE = 8; // 堆上去多久之内还算「水埂上的水」
+
+// 前挡雨刮外沿水埂上的水受到的向下的力（<0 就是被气流顶着往上），着色器里的水埂鼓包也按它走
+export const edgeFlow = (speed) => clamp(1 - speed * 0.12, -3.2, 1) + EDGE_G;
 
 const DROP_VERT = /* glsl */ `
   attribute vec4 aDrop;   // 位置.xy、半径、随机种子
@@ -90,10 +99,17 @@ class DropSim {
     this.flow = flow;
     this.inside = inside;
     this.wiped = wiped;
+    // 暂时不在外面的那部分玻璃（降进车门的车窗）：(x, y) => true 表示这一点接不到雨，水珠一进去就被刮掉
+    this.hidden = null;
     this.area = (rect[2] - rect[0]) * (rect[3] - rect[1]);
     this.n = 0;
     this.spawnAcc = 0;
     this.prevFrac = 0;
+    // 刮片上行时推着走的水（体积 ∝ r³），掉头时堆在扫过范围的外沿
+    this.collect = WIPERS.map(() => new Float32Array(EDGE_BINS));
+    this.wasUp = false;
+    this.clock = 0;
+    this.lastTurn = -1e3;
 
     const f = () => new Float32Array(MAX);
     this.x = f();
@@ -110,6 +126,7 @@ class DropSim {
     this.travel = f(); // 距离下一颗残留小珠还要走多远
     this.seed = f();
     this.sliding = new Uint8Array(MAX);
+    this.edge = new Uint8Array(MAX); // 雨刮掉头时堆在外沿的水
     this.dead = new Uint8Array(MAX);
     this.grid = new Map();
 
@@ -192,7 +209,7 @@ class DropSim {
     this.x[i] = x;
     this.y[i] = y;
     this.r[i] = r;
-    this.rc[i] = 0.0036 + Math.random() * 0.002;
+    this.rc[i] = 0.0032 + Math.random() * 0.0016;
     this.u[i] = 0;
     this.dx[i] = 0;
     this.dy[i] = -1;
@@ -203,6 +220,7 @@ class DropSim {
     this.travel[i] = 0.006 + Math.random() * 0.014;
     this.seed[i] = Math.random();
     this.sliding[i] = 0;
+    this.edge[i] = 0;
     this.dead[i] = 0;
     return i;
   }
@@ -215,7 +233,7 @@ class DropSim {
     for (let k = 0; k < 3; k++) {
       x = x0 + Math.random() * (x1 - x0);
       y = y0 + Math.random() * (y1 - y0);
-      if (this.inside(x, y)) break;
+      if (this.inside(x, y) && !this.hidden?.(x, y)) break;
       x = NaN;
     }
     if (Number.isNaN(x)) return;
@@ -228,7 +246,7 @@ class DropSim {
       const ey = this.y[j] - y;
       const rj = this.r[j];
       if (ex * ex + ey * ey < rj * rj * 0.8) {
-        this.r[j] = Math.cbrt(rj ** 3 + r ** 3);
+        this.r[j] = Math.min(Math.cbrt(rj ** 3 + r ** 3), R_MAX);
         this.age[j] = Math.min(this.age[j], 0.12);
         return;
       }
@@ -243,10 +261,49 @@ class DropSim {
     }
   }
 
+  // 刮片掉头：一路推过来的水停在扫过范围的外沿。除了刮掉的大水珠，还有解析小水珠和水膜——
+  // 按扫过的面积算（越往外端弧长越长，水越多）。堆得够大的挂不住，接着就顺着受力方向淌走
+  _deposit(rain) {
+    const since = Math.min(this.clock - this.lastTurn, 4);
+    this.lastTurn = this.clock;
+    WIPERS.forEach((w, wi) => {
+      const bins = this.collect[wi];
+      const dr = (w.rOut - w.rIn) / EDGE_BINS;
+      for (let b = 0; b < EDGE_BINS; b++) {
+        const rr = w.rIn + (b + 0.2 + Math.random() * 0.6) * dr;
+        const v = bins[b] + rain * since * 6e-8 * (rr / w.rOut) * (0.6 + Math.random() * 0.8);
+        bins[b] = 0;
+        if (v < 2e-9 || this.n >= MAX - 100) continue;
+        // 水多的地方沿着水埂分成几颗大小不一的，每颗都不超过 EDGE_R（再多的水算作顺着边缘流走了）；
+        // 离边缘远近也各不相同，不会排成整整齐齐一列
+        const k = Math.min(3, Math.ceil(v / EDGE_R ** 3));
+        const parts = Array.from({ length: k }, () => 0.3 + Math.random());
+        const sum = parts.reduce((a, p) => a + p, 0);
+        for (let j = 0; j < k; j++) {
+          const rd = Math.min(Math.cbrt((v * parts[j]) / sum), EDGE_R);
+          const r = w.rIn + (b + (j + 0.1 + Math.random() * 0.8) / k) * dr;
+          // 放在刮片下一趟碰不到的地方（与上面杀水珠的放宽量一致）
+          const a = w.a1 + (0.013 + rd + Math.random() ** 2 * 0.009) / r;
+          const x = w.pivot[0] + Math.cos(a) * r;
+          const y = w.pivot[1] + Math.sin(a) * r;
+          if (!this.inside(x, y)) continue;
+          const i = this._add(x, y, rd);
+          if (i < 0) continue;
+          this.age[i] = 1; // 不是砸上来的，没有那一下鼓起
+          this.edge[i] = 1;
+          // 水埂里的水是连着水膜的，比孤零零一颗水珠容易淌下去：低速时大多数马上就顺着边缘往下流
+          this.rc[i] = 0.002 + Math.random() * 0.0012;
+          this.pause[i] = Math.random() * 0.5;
+        }
+      }
+    });
+  }
+
   // rain：雨量 0~1；speed：车速 m/s；wipers：Wipers 实例（只有前挡用）
   update(dt, rain, speed, wipers) {
     if (!this.rtDrops) return;
-    const { x, y, r, rc, u, dx, dy, age, life, ph, pause, travel, sliding, dead } = this;
+    this.clock += dt;
+    const { x, y, r, rc, u, dx, dy, age, life, ph, pause, travel, sliding, edge, dead } = this;
     const [x0, y0, x1, y1] = this.rect;
 
     // ---- 新落下的雨滴
@@ -268,11 +325,16 @@ class DropSim {
         continue;
       }
       this.flow(speed, x[i], y[i], F);
+      const isEdge = edge[i] && age[i] < EDGE_LIFE;
+      if (isEdge) {
+        F[0] += clamp(x[i] / 0.25, -1, 1) * EDGE_SIDE;
+        F[1] -= EDGE_G;
+      }
       const fm = Math.hypot(F[0], F[1]);
       // 受力越大，越小的水珠就挂不住了
       const crit = rc[i] / Math.sqrt(Math.max(fm, 0.05));
       if (!sliding[i]) {
-        r[i] += grow;
+        r[i] = Math.min(r[i] + grow, R_MAX);
         if (fm > 0.15 && r[i] > crit) {
           sliding[i] = 1;
           dx[i] = F[0] / fm;
@@ -290,9 +352,9 @@ class DropSim {
       else if (Math.random() < dt * 0.55) pause[i] = 0.06 + Math.random() * 0.4;
       const target = pause[i] > 0 ? 0 : fm * (0.015 + 0.1 * (r[i] / 0.004) ** 1.5);
       u[i] += (target - u[i]) * Math.min(1, dt * 8);
-      // 蜿蜒：在受力方向两侧来回偏
+      // 蜿蜒：在受力方向两侧来回偏（水埂上的水顺着边缘流，摆得小）
       ph[i] += dt * (2.2 + 2.5 * this.seed[i]);
-      const wob = 0.42 * Math.sin(ph[i]) + 0.24 * Math.sin(ph[i] * 2.3 + this.seed[i] * 10);
+      const wob = (0.42 * Math.sin(ph[i]) + 0.24 * Math.sin(ph[i] * 2.3 + this.seed[i] * 10)) * (isEdge ? 0.35 : 1);
       let tx = F[0] - F[1] * wob;
       let ty = F[1] + F[0] * wob;
       const tl = Math.hypot(tx, ty) || 1;
@@ -320,28 +382,40 @@ class DropSim {
       if (x[i] < x0 - 0.02 || x[i] > x1 + 0.02 || y[i] < y0 - 0.02 || y[i] > y1 + 0.02) dead[i] = 1;
     }
 
-    // ---- 雨刮：刮片扫过的水珠全部带走
+    // ---- 雨刮：刮片扫过的水珠全部带走；上行时带走的水记下来，掉头时堆到外沿
     if (this.wiped && wipers) {
       const f1 = wipers.frac;
       const f0 = this.prevFrac;
       this.prevFrac = f1;
+      const up = f1 > f0;
       if (f0 !== f1) {
-        for (const w of WIPERS) {
+        WIPERS.forEach((w, wi) => {
           const span = w.a1 - w.a0;
           // 刮片有宽度：把这一帧扫过的角度范围两头各放宽一点
           const lo = Math.min(f0, f1);
           const hi = Math.max(f0, f1);
           for (let i = 0; i < this.n; i++) {
+            if (dead[i]) continue;
             const ex = x[i] - w.pivot[0];
             const ey = y[i] - w.pivot[1];
             const rr = Math.hypot(ex, ey);
             if (rr < w.rIn || rr > w.rOut) continue;
             const f = (Math.atan2(ey, ex) - w.a0) / span;
             const pad = (0.012 + r[i]) / (rr * span);
-            if (f > lo - pad && f < hi + pad) dead[i] = 1;
+            if (f > lo - pad && f < hi + pad) {
+              dead[i] = 1;
+              if (up) this.collect[wi][Math.min(EDGE_BINS - 1, Math.floor(((rr - w.rIn) / (w.rOut - w.rIn)) * EDGE_BINS))] += r[i] ** 3;
+            }
           }
-        }
+        });
+        if (this.wasUp && !up) this._deposit(rain);
+        this.wasUp = up;
       }
+    }
+
+    // ---- 缩进车门的玻璃：经过密封条的水珠全部刮掉
+    if (this.hidden) {
+      for (let i = 0; i < this.n; i++) if (!dead[i] && this.hidden(x[i], y[i] - r[i])) dead[i] = 1;
     }
 
     // ---- 合并：挨上了就吸成一颗（体积相加，位置按体积加权）
@@ -368,7 +442,22 @@ class DropSim {
             const ex = x[j] - x[i];
             const ey = y[j] - y[i];
             const lim = (r[i] + r[j]) * 0.78;
-            if (ex * ex + ey * ey > lim * lim) continue;
+            const d2 = ex * ex + ey * ey;
+            if (d2 > lim * lim) {
+              // 水埂上的水珠之间还连着一层水膜：彼此慢慢靠拢（小的往大的那边挤），挨上就吸成一颗
+              const att = (r[i] + r[j]) * 2.6;
+              if ((edge[i] || edge[j]) && life[j] <= 0 && d2 < att * att) {
+                const d = Math.sqrt(d2);
+                const vi = r[i] ** 3;
+                const vj = r[j] ** 3;
+                const s = Math.min(0.014 * dt, d - lim) / d / (vi + vj);
+                x[i] += ex * s * vj;
+                y[i] += ey * s * vj;
+                x[j] -= ex * s * vi;
+                y[j] -= ey * s * vi;
+              }
+              continue;
+            }
             // 大的吃小的
             const a = life[j] <= 0 && r[j] > r[i] ? j : i;
             const b = a === i ? j : i;
@@ -377,7 +466,11 @@ class DropSim {
             const t = vb / (va + vb);
             x[a] += (x[b] - x[a]) * t;
             y[a] += (y[b] - y[a]) * t;
-            r[a] = Math.cbrt(va + vb);
+            r[a] = Math.min(Math.cbrt(va + vb), R_MAX);
+            if (edge[b] && !edge[a]) {
+              edge[a] = 1;
+              age[a] = Math.min(age[a], age[b]);
+            }
             if (sliding[b] && !sliding[a]) {
               sliding[a] = 1;
               dx[a] = dx[b];
@@ -399,6 +492,7 @@ class DropSim {
       if (m !== i) {
         for (const arr of [x, y, r, rc, u, dx, dy, age, life, ph, pause, travel, this.seed]) arr[m] = arr[i];
         sliding[m] = sliding[i];
+        edge[m] = edge[i];
       }
       dead[m] = 0;
       const res = life[m] > 0;

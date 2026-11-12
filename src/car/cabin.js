@@ -13,6 +13,29 @@ const OUTSIDE = new Set(['23___Default', '17___Default', '01___Default', '12___D
 const NO_SHADOW = new Set(['24___Default', 'chrome']);
 // 风挡四周那圈黑色陶瓷釉：模型里是半透明的，这里当成不透光的黑边
 const FRIT = '18___Default';
+// 外后视镜的镜座和镜壳里的黑色件：在门玻璃外侧（玻璃前下角 x≈±0.76），外景通道里已经有一份（会被白色镜壳正确挡住）。
+// 车内通道里这一份平时被玻璃盖住看不见，车窗一降就压在外景上面成了黑块，所以从车内通道里去掉
+const outsideMirror = (x, y, z) => Math.abs(x) > 0.765 && y > 0.85 && y < 1.15 && z > -1.1 && z < -0.4;
+
+// 去掉重心落在 test 里的三角形；一个都没有就原样返回（外景通道也用这份几何，不能改它）
+function dropTriangles(geometry, test) {
+  const g = geometry.index ? geometry.toNonIndexed() : geometry;
+  const pos = g.attributes.position.array;
+  const keep = [];
+  for (let i = 0; i < pos.length; i += 9) {
+    const c = (k) => (pos[i + k] + pos[i + 3 + k] + pos[i + 6 + k]) / 3;
+    if (!test(c(0), c(1), c(2))) keep.push(i / 9);
+  }
+  if (keep.length * 9 === pos.length) return geometry;
+  const out = new THREE.BufferGeometry();
+  for (const [name, attr] of Object.entries(g.attributes)) {
+    const n = attr.itemSize * 3;
+    const arr = new attr.array.constructor(keep.length * n);
+    keep.forEach((t, j) => arr.set(attr.array.subarray(t * n, t * n + n), j * n));
+    out.setAttribute(name, new THREE.BufferAttribute(arr, attr.itemSize, attr.normalized));
+  }
+  return out;
+}
 
 // 假的环境光遮蔽：越靠近地板越暗（光只从车窗进来），烘焙成顶点色
 function bakeOcclusion(geometry) {
@@ -48,14 +71,14 @@ export function createCabin(model) {
     cache.set(src, m);
     return m;
   };
-  const addPart = (part, parent, leather) => {
-    const m = new THREE.Mesh(part.geometry, convert(part.material, leather));
+  const addPart = (part, parent, leather, geometry = part.geometry) => {
+    const m = new THREE.Mesh(geometry, convert(part.material, leather));
     m.castShadow = !NO_SHADOW.has(part.name);
     m.receiveShadow = true;
     parent.add(m);
     return m;
   };
-  for (const part of model.body) if (!OUTSIDE.has(part.name)) addPart(part, group);
+  for (const part of model.body) if (!OUTSIDE.has(part.name)) addPart(part, group, false, dropTriangles(part.geometry, outsideMirror));
 
   // ------------------------------------------------------------ 方向盘：绕转向柱的轴线转
   const wheelPivot = new THREE.Group();
@@ -128,5 +151,5 @@ export function createCabin(model) {
   skyFill.target.position.set(0, 1.0, 0);
   group.add(skyFill, skyFill.target);
 
-  return { group, wheel, cluster, screen, screens, glass, matBg, clusterGlow, skyFill };
+  return { group, wheel, cluster, screen, screens, glass, winDown: glassGeo.left.userData.down, matBg, clusterGlow, skyFill };
 }

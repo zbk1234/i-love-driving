@@ -19,8 +19,9 @@ import { loadCarModel } from './car/model.js';
 import { createCabin } from './car/cabin.js';
 import { createExterior } from './car/exterior.js';
 import { Wipers, WIPER_LABELS } from './car/wipers.js';
-import { createDropSims } from './car/dropsim.js';
+import { createDropSims, edgeFlow } from './car/dropsim.js';
 import { createMirrors } from './car/mirrors.js';
+import { PowerWindow } from './car/window.js';
 
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -93,6 +94,9 @@ async function main() {
   const cabin = createCabin(model);
   cabinScene.add(cabin.group);
   const dropSims = createDropSims(renderer, cabin.glass);
+  // 主驾车窗：降进车门的那部分玻璃上不再有水珠
+  const driverWin = new PowerWindow(cabin.glass.left, cabin.winDown);
+  dropSims.sims.left.hidden = (x, y) => driverWin.hides(x, y);
   const mirrors = createMirrors(model);
   cabin.group.add(mirrors.interior);
   carGroup.add(mirrors.exterior);
@@ -135,6 +139,7 @@ async function main() {
   env.onThunder = (delay, strength) => audio.thunder(delay, strength);
   wipers.onEvent = (type, dur) => audio.wiper(type, dur);
   traffic.onPass = (ttc, rel, du, heavy) => audio.pass(ttc, rel, du, heavy);
+  driverWin.onStop = (open) => audio.windowStop(!open);
 
   // ------------------------------------------------------------------ 尺寸与动态分辨率
   const fixedScale = Number(params.get('scale')) || 0;
@@ -203,11 +208,11 @@ async function main() {
   // ------------------------------------------------------------------ 提示文字
   const toastEl = $('toast');
   let toastTimer = 0;
-  function toast(text) {
+  function toast(text, duration = 2200) {
     toastEl.textContent = text;
     toastEl.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2200);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), duration);
   }
   const helpEl = $('help');
   helpEl.textContent = [
@@ -218,17 +223,18 @@ async function main() {
     'R         雨量',
     'T         傍晚 / 夜晚 / 白天',
     'L         远光灯',
+    'V         主驾车窗 开/关',
     'Q         画质：低 / 中 / 高 / 极高',
     'K         来一道闪电',
     'PgUp/PgDn 座椅升 / 降',
-    'P         导入歌曲 / 播放暂停（列表为空时弹出选择文件）',
+    'P         音乐播放 / 暂停（开局 N 秒后自动播放内置曲目）',
     'N / [ ]   下一首 / 音乐音量，O 或拖进窗口添加更多',
     'M         静音      H  关闭帮助',
   ].join('\n');
 
   // ------------------------------------------------------------------ 车载音响
   const stereo = new CarStereo(audio);
-  stereo.onChange = toast;
+  stereo.onChange = (text) => toast(text, 4200); // 音乐提示多停留 2 秒
   window.addEventListener('dragover', (e) => e.preventDefault());
   window.addEventListener('drop', (e) => {
     e.preventDefault();
@@ -280,6 +286,9 @@ async function main() {
         break;
       case 'KeyK':
         env.triggerLightning();
+        break;
+      case 'KeyV':
+        toast(driverWin.toggle() ? '主驾车窗：打开' : '主驾车窗：关闭');
         break;
       case 'KeyQ':
         setQuality(QUALITY_KEYS[(QUALITY_KEYS.indexOf(qualityKey) + 1) % QUALITY_KEYS.length]);
@@ -336,6 +345,10 @@ async function main() {
     audio.start();
     canvas.focus();
     setTimeout(() => toast('自动巡航中 · A/D 变道 · F 接管方向盘 · H 帮助'), 1400);
+    // 开车 2 秒后自动放第一首；列表为空或这期间已经按过 P 就不动
+    setTimeout(() => {
+      if (stereo.index < 0 && stereo.tracks.length) stereo.play(0);
+    }, 3000);
   }
   $('start').addEventListener('click', start);
   if (params.has('autostart')) {
@@ -445,7 +458,9 @@ async function main() {
     wipers.update(time, env.rain);
     wipers.applyTo(cabin.glass.front);
     const v = vehicle.speed;
+    driverWin.update(dt, time);
     dropSims.update(dt, env.rain, v, wipers);
+    cabin.glass.front.uniforms.uEdgeFlow.value = edgeFlow(v);
     // 前挡：低速时水珠往下淌，超过约 30km/h 被气流顶着往上爬
     const rateF = clamp(0.25 - v * 0.03, -0.9, 0.25);
     slideFront += rateF * dt;
@@ -544,7 +559,11 @@ async function main() {
       passGain: traffic.passby.gain,
       passPan: traffic.passby.pan,
       scrape: vehicle.scrape,
+      window: driverWin.open,
+      winMotor: driverWin.moving ? (driverWin.target > driverWin.open ? -1 : 1) : 0,
     });
+    // 开着窗，音乐被窗外的声音盖过去，听起来小了一半
+    stereo.setDuck(1 - 0.5 * Math.min(driverWin.open * 1.6, 1));
   }
 
   function render() {
@@ -606,7 +625,7 @@ async function main() {
   }
   requestAnimationFrame(frame);
 
-  Object.assign(debug, { renderer, world, cabinScene, camera, vehicle, traffic, env, wipers, pipeline, audio, G, simulate, render, setQuality, dropSims });
+  Object.assign(debug, { renderer, world, cabinScene, camera, vehicle, traffic, env, wipers, pipeline, audio, G, simulate, render, setQuality, dropSims, driverWin });
 }
 
 main().catch((e) => {
