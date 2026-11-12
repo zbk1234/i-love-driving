@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { GLASS, WIPERS } from '../config.js';
 import { G } from '../core/globals.js';
 
-// 车窗上的雨。玻璃是真实的 3D 网格，水珠固定在「玻璃坐标」里，所以转头时水珠是贴在玻璃上的。
+// 车窗上的雨。玻璃是真实的 3D 网格（取自车模），水珠固定在「玻璃坐标」里，所以转头时水珠是贴在玻璃上的。
 // 做法：外景先渲染成一张图（tScene），玻璃网格按屏幕坐标去采这张图——
 //   · 水珠 = 一个小透镜：把采样点往反方向推很远，于是每颗水珠里都有一幅缩小、上下颠倒的外景
 //   · 水膜 = 模糊：在清晰图和两级模糊图之间插值
@@ -10,16 +10,24 @@ import { G } from '../core/globals.js';
 
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
-// 前挡曲面：玻璃坐标 (gx, gy) → 车体局部坐标
+// 前挡曲面（对车模风挡的拟合）：玻璃坐标 (gx, gy) → 车体局部坐标
 export function glassPoint(gx, gy, out = new THREE.Vector3()) {
   const t = gy / GLASS.H;
-  const y = GLASS.Y0 + GLASS.DY * t + 0.015 * Math.sin(Math.PI * clamp01(t));
+  const y = GLASS.Y0 + GLASS.DY * t + GLASS.BULGE * Math.sin(Math.PI * clamp01(t));
   const z = GLASS.Z0 + GLASS.DZ * t + GLASS.SWEEP * (gx / GLASS.W0) ** 2;
   return out.set(gx, y, z);
 }
 
+// 反过来：风挡上的一个点 → 玻璃坐标。先扣掉两侧的后掠，再投影到中线的斜面方向上
+function windshieldCoords(x, y, z) {
+  const zc = z - GLASS.SWEEP * (x / GLASS.W0) ** 2;
+  const t = ((y - GLASS.Y0) * GLASS.DY + (zc - GLASS.Z0) * GLASS.DZ) / (GLASS.DY ** 2 + GLASS.DZ ** 2);
+  return [x, t * GLASS.H];
+}
+
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
+const _c = new THREE.Vector3();
 // 朝车外的法线
 export function glassNormal(gx, gy, out = new THREE.Vector3()) {
   glassPoint(gx + 0.01, gy, _a).sub(glassPoint(gx - 0.01, gy, _b));
@@ -28,76 +36,63 @@ export function glassNormal(gx, gy, out = new THREE.Vector3()) {
   return out.crossVectors(_a, du).normalize();
 }
 
-export const glassHalfWidth = (gy) => GLASS.W0 + (GLASS.W1 - GLASS.W0) * clamp01(gy / GLASS.H);
+// 把车模的玻璃网格（车体局部坐标，一个网格里包含全部车窗）拆成 前 / 左 / 右 / 后 四组，
+// 并给每个顶点算出玻璃坐标 aG：x 永远指向「从车内看」的屏幕右侧，y 沿玻璃向上，单位米。
+export function createGlassGeometries(source) {
+  const pos = source.attributes.position;
+  const index = source.index;
+  const triCount = (index ? index.count : pos.count) / 3;
+  const groups = { front: [], left: [], right: [], rear: [] };
+  const nSum = { front: new THREE.Vector3(), left: new THREE.Vector3(), right: new THREE.Vector3(), rear: new THREE.Vector3() };
+  const n = new THREE.Vector3();
+  for (let i = 0; i < triCount; i++) {
+    const ia = index ? index.getX(i * 3) : i * 3;
+    const ib = index ? index.getX(i * 3 + 1) : i * 3 + 1;
+    const ic = index ? index.getX(i * 3 + 2) : i * 3 + 2;
+    _a.fromBufferAttribute(pos, ia);
+    _b.fromBufferAttribute(pos, ib);
+    _c.fromBufferAttribute(pos, ic);
+    n.subVectors(_b, _a).cross(_c.clone().sub(_a));
+    const area = n.length();
+    if (area < 1e-12) continue;
+    // 侧窗的法线基本是横向的；前后风挡再按在车头还是车尾区分
+    const side = Math.abs(n.x) > 0.6 * area;
+    const cx = (_a.x + _b.x + _c.x) / 3;
+    const cz = (_a.z + _b.z + _c.z) / 3;
+    const key = side ? (cx < 0 ? 'left' : 'right') : cz < 0 ? 'front' : 'rear';
+    groups[key].push(_a.x, _a.y, _a.z, _b.x, _b.y, _b.z, _c.x, _c.y, _c.z);
+    if (n.y < 0) n.negate(); // 车窗都朝上倾，统一成朝外的那一面
+    nSum[key].add(n);
+  }
 
-export function createWindshieldGeometry() {
-  const NS = 40;
-  const NT = 24;
-  const pos = [];
-  const gco = [];
-  const edge = [];
-  const idx = [];
-  const p = new THREE.Vector3();
-  for (let j = 0; j <= NT; j++) {
-    const t = j / NT;
-    const gy = t * GLASS.H;
-    const hw = glassHalfWidth(gy) + 0.03;
-    for (let i = 0; i <= NS; i++) {
-      const gx = (i / NS) * 2 * hw - hw;
-      glassPoint(gx, gy, p);
-      pos.push(p.x, p.y, p.z);
-      gco.push(gx, gy);
-      edge.push(Math.min(hw - Math.abs(gx), gy, GLASS.H - gy));
-      if (i < NS && j < NT) {
-        const a = j * (NS + 1) + i;
-        idx.push(a, a + 1, a + NS + 2, a, a + NS + 2, a + NS + 1);
+  const out = {};
+  for (const key of Object.keys(groups)) {
+    const p = groups[key];
+    const g = new Float32Array((p.length / 3) * 2);
+    // 沿玻璃向上的距离 = 高度差 / 玻璃的倾斜程度
+    const ny = nSum[key].normalize().y;
+    const rise = Math.sqrt(Math.max(1 - ny * ny, 1e-4));
+    let yMin = Infinity;
+    for (let i = 1; i < p.length; i += 3) yMin = Math.min(yMin, p[i]);
+    for (let i = 0, j = 0; i < p.length; i += 3, j += 2) {
+      const x = p[i];
+      const y = p[i + 1];
+      const z = p[i + 2];
+      if (key === 'front') {
+        const w = windshieldCoords(x, y, z);
+        g[j] = w[0];
+        g[j + 1] = w[1];
+      } else {
+        g[j] = key === 'left' ? -z : key === 'right' ? z : -x;
+        g[j + 1] = (y - yMin) / rise;
       }
     }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+    geo.setAttribute('aG', new THREE.BufferAttribute(g, 2));
+    out[key] = geo;
   }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('aG', new THREE.Float32BufferAttribute(gco, 2));
-  g.setAttribute('aEdge', new THREE.Float32BufferAttribute(edge, 1));
-  g.setIndex(idx);
-  return g;
-}
-
-// 侧窗 / 后窗：四个角点双线性插值。corners 与 gcorners 顺序：左下、右下、右上、左上（从车内看）
-export function createFlatGlassGeometry(corners, gcorners, nx = 14, ny = 8) {
-  const pos = [];
-  const gco = [];
-  const edge = [];
-  const idx = [];
-  const segDist = (px, py, a, b) => {
-    const vx = b[0] - a[0];
-    const vy = b[1] - a[1];
-    const t = clamp01(((px - a[0]) * vx + (py - a[1]) * vy) / (vx * vx + vy * vy));
-    return Math.hypot(px - a[0] - vx * t, py - a[1] - vy * t);
-  };
-  const bil = (c, s, t, k) => (c[0][k] * (1 - s) + c[1][k] * s) * (1 - t) + (c[3][k] * (1 - s) + c[2][k] * s) * t;
-  for (let j = 0; j <= ny; j++) {
-    for (let i = 0; i <= nx; i++) {
-      const s = i / nx;
-      const t = j / ny;
-      pos.push(bil(corners, s, t, 0), bil(corners, s, t, 1), bil(corners, s, t, 2));
-      const gx = bil(gcorners, s, t, 0);
-      const gy = bil(gcorners, s, t, 1);
-      gco.push(gx, gy);
-      let e = Infinity;
-      for (let k = 0; k < 4; k++) e = Math.min(e, segDist(gx, gy, gcorners[k], gcorners[(k + 1) % 4]));
-      edge.push(e);
-      if (i < nx && j < ny) {
-        const a = j * (nx + 1) + i;
-        idx.push(a, a + 1, a + nx + 2, a, a + nx + 2, a + nx + 1);
-      }
-    }
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('aG', new THREE.Float32BufferAttribute(gco, 2));
-  g.setAttribute('aEdge', new THREE.Float32BufferAttribute(edge, 1));
-  g.setIndex(idx);
-  return g;
+  return out;
 }
 
 const FRAG = /* glsl */ `
@@ -118,20 +113,22 @@ uniform vec4 uWpB;
 uniform vec4 uWpAng;      // 两支雨刮的起止角
 uniform vec3 uTint;
 uniform float uLens;
-uniform float uFrit;
 uniform float uWet;       // 水膜厚度系数：前挡 1，侧窗薄一些
 uniform vec3 uSkyAmb;
 uniform float uFlash;
 varying vec2 vG;
-varying float vEdge;
 
 float hash11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
 float hash21(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
 
-// 该点距上次被雨刮刮过的秒数；ridge = 刮片前面被推着走的那道水脊
-float wipeSince(vec2 g, vec4 wp, vec2 ang, out float ridge) {
-  ridge = 0.0;
+// 雨刮。返回该点距上次被刮过的秒数，另外给出刮片带来的两样东西：
+//   bead  = 被刮片聚拢起来的水（刮片前面推着走的水脊、刮片外端甩在玻璃上的弧形水线），
+//           格式和水珠一样：xy 是归一化的表面坡度方向，z 是遮罩
+//   smear = 刚刮过的地方残留的极薄条纹造成的折射偏移（沿刮片扫过的弧线方向排列，零点几秒就流平）
+float wipeSince(vec2 g, vec4 wp, vec2 ang, out vec3 bead, out vec2 smear) {
+  bead = vec3(0.0);
+  smear = vec2(0.0);
   vec2 d = g - wp.xy;
   float r = length(d);
   float f = (atan(d.y, d.x) - ang.x) / (ang.y - ang.x);
@@ -145,19 +142,44 @@ float wipeSince(vec2 g, vec4 wp, vec2 ang, out float ridge) {
   if (tau >= td) s = tau - td;
   else if (tau >= tu) s = tau - tu;
   else s = tau + uWipe.z - td;
+  s = max(s, 0.0);
+
+  vec2 er = d / r;                 // 径向（沿刮片）
+  vec2 et = vec2(-er.y, er.x);     // 切向（刮片前进 / 后退的方向）
+
+  // ---- 水脊：刮片前面推着一道圆鼓鼓的水，粗细沿刮片不均匀，还在不停地抖
   if (tau < D) {
     float a = 0.5 - 0.5 * cos(6.2831853 * tau / D);
     float dir = tau < 0.5 * D ? 1.0 : -1.0;
     float ahead = (f - a) * dir * (ang.y - ang.x) * r;
-    ridge = step(0.0, ahead) * smoothstep(0.018, 0.0, ahead);
+    float w = 0.0105 * (0.75 + 0.45 * sin(r * 61.0 + tau * 9.0) * sin(r * 23.0 - 1.3));
+    // 刮片本身有一定宽度：它压着的地方没有水，水脊从它的前缘开始
+    float k = (ahead - 0.007) / w;
+    if (k > 0.0 && k < 1.0) bead = vec3(et * dir * cos(3.14159 * k) * 0.92, sin(3.14159 * k));
+    if (ahead > -0.009 && ahead < 0.007) s = 0.0;
   }
-  return max(s, 0.0);
+
+  // ---- 外端水线：刮片甩到最外圈的水留成一条弧，几秒内断成一颗颗水珠再流走
+  float e = (wp.w - r) / 0.0055;
+  if (e < 1.0 && s < 9.0) {
+    float n = 0.5 + 0.5 * sin(f * 131.0 + 4.0 * sin(f * 37.0));
+    float keep = smoothstep(s * 0.11, s * 0.11 + 0.12, n);
+    float m = sin(3.14159 * e) * keep;
+    if (m > bead.z) bead = vec3(-er * cos(3.14159 * e) * 0.9, m);
+  }
+
+  // ---- 刮后的细条纹
+  float lines = sin(r * 4100.0 + 3.0 * sin(r * 310.0)) * 0.6 + sin(r * 1730.0 + 1.7) * 0.4;
+  smear = er * lines * 0.0045 * exp(-s / 0.4);
+  return s;
 }
 
-// 静止水珠：每格一颗，寿命到了原地换一颗。只有「出生晚于上次刮刷」的才画出来。
-// 返回 (透镜偏移.xy, 遮罩)
-vec3 dropsLayer(vec2 g, float cell, float life, float since, float density, float seed) {
-  vec2 q = g / cell;
+// 静止水珠。每格最多一颗，寿命到了原地换一颗；只有「出生晚于上次刮刷」的才画出来。
+// 为了不露出格子的痕迹：每层的格子转一个不同的角度、水珠大小连续分布（小的多大的少）、
+// 轮廓不是正圆（一头大一头小，大水珠被重力拉长）。
+// cs = 这一层格子的旋转 (cos, sin)。返回 (水珠内归一化位置.xy × 遮罩, 遮罩)
+vec3 dropsLayer(vec2 g, vec2 cs, float cell, float life, float since, float density, float seed) {
+  vec2 q = vec2(cs.x * g.x - cs.y * g.y, cs.y * g.x + cs.x * g.y) / cell;
   vec2 id = floor(q);
   vec2 f = fract(q) - 0.5;
   float h = hash21(id + seed);
@@ -167,13 +189,17 @@ vec3 dropsLayer(vec2 g, float cell, float life, float since, float density, floa
   if (age > since) return vec3(0.0); // 刚刮过的区域绝大多数格子在这里就返回了
   vec2 rnd = hash22(id + n * 17.13 + seed);
   if (rnd.x > density) return vec3(0.0);
-  vec2 c = (hash22(id * 1.37 + n * 5.1 + seed) - 0.5) * 0.5;
-  float R = mix(0.11, 0.24, rnd.y) * (0.6 + 0.4 * smoothstep(0.0, life * 0.5, age));
+  vec2 sh = hash22(id * 1.37 + n * 5.1 + seed) - 0.5;
+  float size = rnd.y * rnd.y;                       // 偏向小水珠
+  float R = mix(0.07, 0.25, size) * (0.55 + 0.45 * smoothstep(0.0, life * 0.5, age));
   R *= smoothstep(0.0, 0.05, age) * (1.0 + 0.4 * exp(-age * 16.0)); // 砸上来的瞬间略微摊开
   R *= smoothstep(life, life - 0.25, age);
-  vec2 d = (f - c) / max(R, 1e-4);
-  d.y *= 0.88;
-  float m = smoothstep(1.0, 0.72, dot(d, d));
+  vec2 c = sh * (0.9 - 3.2 * R);                    // 小水珠在格子里可以挪得更远
+  vec2 e = f - c;
+  vec2 d = vec2(cs.x * e.x + cs.y * e.y, -cs.y * e.x + cs.x * e.y) / max(R, 1e-4); // 转回玻璃坐标
+  d.y *= 1.0 - 0.22 * size;                         // 大水珠被重力拉长
+  d *= 1.0 + dot(d, sh) * 0.5 + d.x * d.y * (rnd.x - 0.5) * 0.6; // 不规则的轮廓
+  float m = smoothstep(1.0, 0.84, dot(d, d));
   return vec3(d * m, m);
 }
 
@@ -203,13 +229,13 @@ vec4 slideLayer(vec2 g, vec3 sl, float sgn, float since, float rain, float seed)
   float behind = -along * sgn;          // >0 在水珠身后
   float R = mix(0.16, 0.26, rnd.y) * grown;
   vec2 dl = vec2(dx, along * (behind > 0.0 ? 0.55 : 1.0)) / max(R, 1e-4);
-  float m = smoothstep(1.0, 0.65, dot(dl, dl));
+  float m = smoothstep(1.0, 0.8, dot(dl, dl));
   float tl = clamp(behind / (CH * 0.5), 0.0, 1.0);
   float tw = R * 0.5 * (1.0 - tl);
   float tm = smoothstep(tw, tw * 0.4, abs(dx)) * step(0.0, behind) * (1.0 - tl) * grown;
   float by = fract(q.y * 1.7 + h1 * 5.0) - 0.5;
   vec2 bd = vec2(dx, by / 1.7) / max(R * 0.38 * (1.0 - tl), 1e-4);
-  float bm = smoothstep(1.0, 0.5, dot(bd, bd)) * step(0.0, behind) * step(tl, 0.98);
+  float bm = smoothstep(1.0, 0.7, dot(bd, bd)) * step(0.0, behind) * step(tl, 0.98);
   vec2 offL = dl * m + bd * bm * (1.0 - m);
   return vec4(ex * offL.x + ey * offL.y, max(m, bm * 0.85), max(tm, m));
 }
@@ -219,24 +245,33 @@ void main() {
   vec2 suv = gl_FragCoord.xy / uRes;
 
   float since = 1e4;
-  float ridge = 0.0;
+  vec3 bead = vec3(0.0);
+  vec2 smear = vec2(0.0);
   if (uHasWipers > 0.5) {
-    float r1;
-    float r2;
-    float s1 = wipeSince(g, uWpA, uWpAng.xy, r1);
-    float s2 = wipeSince(g, uWpB, uWpAng.zw, r2);
+    vec3 b1;
+    vec3 b2;
+    vec2 m1;
+    vec2 m2;
+    float s1 = wipeSince(g, uWpA, uWpAng.xy, b1, m1);
+    float s2 = wipeSince(g, uWpB, uWpAng.zw, b2, m2);
     since = min(s1, s2);
-    ridge = max(r1, r2);
+    bead = b1.z > b2.z ? b1 : b2;
+    smear = s1 < s2 ? m1 : m2;
   }
   float rain = uRain;
+  vec4 nf = texture2D(tNoise, g * 7.0);
+  // 水珠成片：有的地方密，有的地方稀
+  float patchy = 0.5 + 1.0 * nf.b;
 
-  // ---- 三层由小到大的静止水珠
+  // ---- 四层由小到大的静止水珠
   vec3 acc = vec3(0.0);
-  vec3 L = dropsLayer(g, 0.0042, 3.2, since, 0.2 + 0.65 * rain, 11.0);
+  vec3 L = dropsLayer(g, vec2(0.955, 0.296), 0.0034, 2.6, since, (0.22 + 0.6 * rain) * patchy, 11.0);
   acc = mix(acc, L, L.z);
-  L = dropsLayer(g + 0.37, 0.0095, 6.0, since, 0.15 + 0.6 * rain, 23.0);
+  L = dropsLayer(g + 0.37, vec2(0.454, 0.891), 0.0068, 5.0, since, (0.2 + 0.55 * rain) * patchy, 23.0);
   acc = mix(acc, L, L.z);
-  L = dropsLayer(g + 0.71, 0.021, 12.0, since, 0.08 + 0.42 * rain, 37.0);
+  L = dropsLayer(g + 0.71, vec2(-0.416, 0.909), 0.0125, 9.0, since, (0.14 + 0.5 * rain) * patchy, 37.0);
+  acc = mix(acc, L, L.z);
+  L = dropsLayer(g + 0.13, vec2(-0.857, 0.516), 0.024, 15.0, since, (0.06 + 0.4 * rain) * patchy, 59.0);
   acc = mix(acc, L, L.z);
 
   // ---- 滑动水珠
@@ -256,16 +291,21 @@ void main() {
     trail = max(trail, S.w * uSlideB.w);
   }
 
+  // ---- 雨刮聚拢的水盖在最上面
+  acc.xy = mix(acc.xy, bead.xy * bead.z, bead.z);
+  acc.z = max(acc.z, bead.z);
+
   // ---- 水膜：刮过之后几秒内重新糊上；水珠本身和水痕处是清晰的
-  vec4 nf = texture2D(tNoise, g * 7.0);
   float film = rain * smoothstep(0.0, 2.6, since) * uWet;
   float blur = film * (0.5 + 0.4 * nf.b) * (1.0 - 0.85 * trail);
   blur = mix(blur, 0.05, acc.z);
-  blur = max(blur, ridge * 0.6);
+  blur = max(blur, length(smear) * 40.0);
 
-  vec2 off = acc.xy * uLens;
+  // ---- 折射。水珠是球冠：越靠边表面越陡，偏移越大，所以边缘一圈窄窄的地方压进了很大一片外景
+  float dd = min(dot(acc.xy, acc.xy), 1.0);
+  vec2 off = acc.xy * (uLens * 0.8 * inversesqrt(max(1.0 - 0.82 * dd, 0.14)));
   off += (nf.rg - 0.5) * 0.012 * film * (1.0 - acc.z);
-  off.y += ridge * 0.03 * (nf.a - 0.3);
+  off += smear * (1.0 - acc.z);
 
   vec2 uv2 = suv - off * vec2(uRes.y / uRes.x, 1.0);
   float b2 = clamp(blur * 2.0, 0.0, 2.0);
@@ -274,27 +314,28 @@ void main() {
   else if (b2 < 1.0) col = mix(texture2D(tScene, uv2).rgb, texture2D(tBlurA, uv2).rgb, b2);
   else col = mix(texture2D(tBlurA, uv2).rgb, texture2D(tBlurB, uv2).rgb, b2 - 1.0);
 
-  // ---- 水珠边缘的暗环和一点天光高光
-  float dd = dot(acc.xy, acc.xy);
-  col *= 1.0 - 0.5 * acc.z * smoothstep(0.25, 0.75, dd);
-  float glint = acc.z * smoothstep(0.55, 0.9, dot(normalize(acc.xy + 1e-5), vec2(-0.45, 0.89))) * smoothstep(0.2, 0.5, dd);
-  col += uSkyAmb * (1.0 + uFlash * 10.0) * glint * 1.3;
+  // ---- 水珠表面的光
+  if (acc.z > 0.01) {
+    vec2 nd = acc.xy * inversesqrt(dd + 1e-5);
+    float rim = acc.z * smoothstep(0.5, 0.97, dd);
+    // 边缘很陡，光几乎折不过来：一圈细细的暗边
+    col *= 1.0 - 0.6 * rim;
+    // 掠射角的菲涅耳反射：边缘映出周围的光（路灯的橙色、车灯的白色）和天空
+    float fres = rim * rim;
+    vec3 env = texture2D(tBlurB, suv + nd * vec2(uRes.y / uRes.x, 1.0) * 0.12).rgb;
+    col += (env * 0.55 + uSkyAmb * (0.25 + 0.35 * nd.y) * (1.0 + uFlash * 10.0)) * fres;
+    // 朝天的那一侧有一小点锐利的高光
+    float glint = acc.z * smoothstep(0.9, 0.99, dot(nd, vec2(-0.45, 0.89))) * smoothstep(0.25, 0.45, dd) * smoothstep(0.85, 0.6, dd);
+    col += (uSkyAmb * (1.0 + uFlash * 10.0) + env * 0.5) * glint * 2.2;
+  }
 
   col *= uTint;
-
-  // ---- 玻璃边缘的黑色陶瓷釉（实心边 + 渐隐圆点）
-  if (uFrit > 0.0) {
-    float t = (vEdge - uFrit * 0.6) / uFrit;
-    float rdot = 0.5 * (1.0 - clamp(t, 0.0, 1.0));
-    float dotm = step(t, 1.0) * smoothstep(rdot, rdot - 0.15, length(fract(g * 260.0) - 0.5));
-    col = mix(col, vec3(0.003), max(step(t, 0.0), dotm));
-  }
 
   gl_FragColor = vec4(col, 1.0);
 }
 `;
 
-export function createGlassMaterial({ wipers = false, tint = [0.86, 0.9, 0.88], lens = 0.1, frit = 0, wet = 1 } = {}) {
+export function createGlassMaterial({ wipers = false, tint = [0.86, 0.9, 0.88], lens = 0.1, wet = 1 } = {}) {
   const [wa, wb] = WIPERS;
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -315,19 +356,15 @@ export function createGlassMaterial({ wipers = false, tint = [0.86, 0.9, 0.88], 
       uWpAng: { value: new THREE.Vector4(wa.a0, wa.a1, wb.a0, wb.a1) },
       uTint: { value: new THREE.Color(...tint) },
       uLens: { value: lens },
-      uFrit: { value: frit },
       uWet: { value: wet },
       uSkyAmb: G.uSkyAmb,
       uFlash: G.uFlash,
     },
     vertexShader: /* glsl */ `
       attribute vec2 aG;
-      attribute float aEdge;
       varying vec2 vG;
-      varying float vEdge;
       void main() {
         vG = aG;
-        vEdge = aEdge;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `,

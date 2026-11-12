@@ -175,6 +175,14 @@ export class Pipeline {
     return rt;
   }
 
+  // 换抗锯齿档位或外景分辨率：下次 setSize 时重建全部渲染目标
+  configure({ msaa, worldScale }) {
+    if (msaa === this.msaa && worldScale === this.worldScale) return;
+    this.msaa = msaa;
+    this.worldScale = worldScale;
+    this.width = 0;
+  }
+
   setSize(w, h) {
     if (w === this.width && h === this.height) return;
     this.width = w;

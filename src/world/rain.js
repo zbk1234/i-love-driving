@@ -100,6 +100,10 @@ export function createRain(count = 7000) {
   return {
     mesh,
     material,
+    // 只画前 n 根（种子是随机的，所以取前 n 根仍然均匀）
+    setCount(n) {
+      geo.instanceCount = Math.min(count, Math.max(1, Math.round(n)));
+    },
     // carVel：车速向量（世界系）；wind：横风
     update(dt, carPos, carFwd, carVel, wind, amount) {
       fall.set(wind.x, -8.6, wind.z);

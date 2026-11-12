@@ -1,95 +1,72 @@
 import * as THREE from 'three';
-import { GLASS } from '../config.js';
-import { GeoBuilder, V3 } from '../world/geo.js';
-import { worldMaterial } from '../world/materials.js';
+import { worldMaterial, PLACE_MODEL } from '../world/materials.js';
 
-// 自车从驾驶位能看到的外部：引擎盖、雨刮下方的黑色盖板、车门肩线（外后视镜在 mirrors.js）。
-// 它们属于外景通道（会被玻璃上的水珠折射），放在图层 2：只有主相机能看见。
+// 自车从驾驶位能看到的外部：引擎盖、翼子板、车门外侧、外后视镜的壳体。
+// 它们属于外景通道（会被玻璃上的水珠折射，也受路灯的解析光照），放在图层 2：只有主相机能看见。
+// 只留下从车窗里看得见的那部分三角形：车头、车尾的上表面，和车身两侧窗线附近的一条。
 
-const lerp = (a, b, t) => a + (b - a) * t;
+// 材质名 → [颜色（线性空间）, 是否车漆]
+const PARTS = {
+  '23___Default': [[0.74, 0.74, 0.74], 1], // 白色车漆
+  '17___Default': [[0.42, 0.42, 0.42], 1], // 车尾的浅灰部分
+  '24___Default': [[0.018, 0.018, 0.018], 0], // 黑色饰条、格栅、窗框
+};
 
-export function createExterior() {
+// 三角形的重心是否落在「从车窗里看得见」的区域
+const visible = (x, y, z) => y > 0.72 && (z < -0.85 || z > 1.7 || Math.abs(x) > 0.74);
+
+function visibleSubset(geometry) {
+  const g = geometry.index ? geometry.toNonIndexed() : geometry;
+  const pos = g.attributes.position.array;
+  const nor = g.attributes.normal.array;
+  const outPos = [];
+  const outNor = [];
+  for (let i = 0; i < pos.length; i += 9) {
+    const x = (pos[i] + pos[i + 3] + pos[i + 6]) / 3;
+    const y = (pos[i + 1] + pos[i + 4] + pos[i + 7]) / 3;
+    const z = (pos[i + 2] + pos[i + 5] + pos[i + 8]) / 3;
+    if (!visible(x, y, z)) continue;
+    for (let k = 0; k < 9; k++) {
+      outPos.push(pos[i + k]);
+      outNor.push(nor[i + k]);
+    }
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.Float32BufferAttribute(outPos, 3));
+  out.setAttribute('normal', new THREE.Float32BufferAttribute(outNor, 3));
+  return out;
+}
+
+export function createExterior(model) {
   const group = new THREE.Group();
-  const paint = [0.035, 0.04, 0.05];
-
-  const mat = worldMaterial({
-    surface: /* glsl */ `
-      if (vData < 0.5) {
-        // 车漆上密密的小水珠：用噪声扰动法线，路灯扫过时会闪
-        vec2 bn = texture2D(tNoise, vUv * 5.0).rg - 0.5;
-        vec2 bn2 = texture2D(tNoise, vUv * 1.3 + 0.4).rg - 0.5;
-        N = normalize(N + vec3(bn.x + bn2.x * 0.5, 0.0, bn.y + bn2.y * 0.5) * 0.22 * uRain);
-        gloss = 1.0;
-        shin = 420.0;
-      } else if (vData < 1.5) {
-        gloss = 0.95;
-        shin = 300.0;
-      } else {
-        gloss = 0.15;
-      }
-    `,
-  });
-
-  const b = new GeoBuilder();
-  const zRear = (x) => GLASS.Z0 + GLASS.SWEEP * (x / GLASS.W0) ** 2 - 0.07;
-  const hoodY = (x, t) => {
-    const base = 0.955 - 0.02 * t - 0.19 * t * t * t;
-    const crown = -0.085 * Math.pow(Math.abs(x) / 0.9, 2.4);
-    const ridge = 0.012 * Math.exp(-(((Math.abs(x) - 0.62) / 0.09) ** 2));
-    return base + crown + ridge;
-  };
-
-  // ---- 引擎盖
-  {
-    const P = [];
-    for (let i = 0; i <= 28; i++) {
-      const x = lerp(-0.92, 0.92, i / 28);
-      const row = [];
-      for (let j = 0; j <= 14; j++) {
-        const t = j / 14;
-        row.push(V3(x, hoodY(x, t), lerp(zRear(x), -2.34, t)));
-      }
-      P.push(row);
-    }
-    b.color(...paint).data(0);
-    b.grid(P, { uvFn: (i, j) => [P[i][j].x, P[i][j].z] });
-    // 车头前缘向下收
-    const F = [];
-    for (let i = 0; i <= 28; i++) {
-      const x = lerp(-0.92, 0.92, i / 28);
-      F.push([V3(x, hoodY(x, 1), -2.34), V3(x, hoodY(x, 1) - 0.3, -2.4)]);
-    }
-    b.grid(F, { uvFn: (i, j) => [F[i][j].x, F[i][j].z] });
+  for (const part of model.body) {
+    const spec = PARTS[part.name];
+    if (!spec) continue;
+    const geometry = visibleSubset(part.geometry);
+    if (!geometry.attributes.position.count) continue;
+    const mat = worldMaterial({
+      place: `${PLACE_MODEL} vLp = position;`,
+      vertPars: 'varying vec3 vLp;',
+      fragPars: 'varying vec3 vLp; uniform vec3 uColor; uniform float uPaint;',
+      uniforms: { uColor: { value: new THREE.Color(...spec[0]) }, uPaint: { value: spec[1] } },
+      surface: /* glsl */ `
+        albedo = uColor;
+        if (uPaint > 0.5) {
+          // 车漆上密密的小水珠：用噪声扰动法线，路灯扫过时会闪
+          vec2 bn = texture2D(tNoise, vLp.xz * 5.0).rg - 0.5;
+          vec2 bn2 = texture2D(tNoise, vLp.xz * 1.3 + 0.4).rg - 0.5;
+          N = normalize(N + vec3(bn.x + bn2.x * 0.5, 0.0, bn.y + bn2.y * 0.5) * 0.22 * uRain);
+          gloss = 1.0;
+          shin = 420.0;
+        } else {
+          gloss = 0.15;
+        }
+      `,
+    });
+    const mesh = new THREE.Mesh(geometry, mat);
+    mesh.frustumCulled = false;
+    mesh.layers.set(2);
+    group.add(mesh);
   }
-
-  // ---- 风挡下沿的黑色通风盖板
-  {
-    const C = [];
-    for (let i = 0; i <= 20; i++) {
-      const x = lerp(-0.86, 0.86, i / 20);
-      const zg = GLASS.Z0 + GLASS.SWEEP * (x / GLASS.W0) ** 2;
-      C.push([V3(x, hoodY(x, 0) - 0.004, zRear(x)), V3(x, 0.938, zg - 0.03), V3(x, 0.93, zg + 0.02)]);
-    }
-    b.color(0.012, 0.012, 0.013).data(2);
-    b.grid(C);
-  }
-
-  // ---- 车门外侧的肩线和翼子板侧面（从侧窗往下能看到的一条车身）
-  for (const s of [-1, 1]) {
-    b.color(...paint).data(0);
-    const S = [];
-    for (let j = 0; j <= 10; j++) {
-      const z = lerp(-2.3, 2.3, j / 10);
-      const yTop = z < -0.9 ? hoodY(s * 0.92, (z - zRear(0.92)) / (-2.34 - zRear(0.92))) : 0.935;
-      S.push([V3(s * 0.84, yTop, z), V3(s * 0.935, yTop - 0.03, z), V3(s * 0.95, 0.45, z)]);
-    }
-    b.grid(S, { uvFn: (i, j) => [S[i][j].y, S[i][j].z] });
-
-  }
-
-  const mesh = new THREE.Mesh(b.build(), mat);
-  mesh.frustumCulled = false;
-  mesh.layers.set(2);
-  group.add(mesh);
   return group;
 }

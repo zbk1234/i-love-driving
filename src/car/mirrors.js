@@ -1,65 +1,20 @@
 import * as THREE from 'three';
 import { CAR } from '../config.js';
 import { G } from '../core/globals.js';
-import { GeoBuilder, V3 } from '../world/geo.js';
-import { worldMaterial } from '../world/materials.js';
+import { trianglePositions } from './model.js';
 
-// 三面后视镜：车内镜 + 左右外后视镜，都是「真」平面镜。
+// 三面后视镜：车内镜 + 左右外后视镜，都是「真」平面镜。镜壳是车模自带的，这里只替换镜片。
 //
 // 做法：把驾驶员的眼睛关于镜面做镜像，得到一个虚拟视点；从虚拟视点出发、以镜片的四个角为
 // 视锥边界（离轴投影）渲染一遍外景。这样镜子里看到的范围和真车上一样由「眼睛 + 镜片」的
 // 相对位置决定，而不是随便架一台朝后的相机。
 //
-// 镜片的朝向不是手调的角度，而是由「想让驾驶员从镜子里看到哪儿」反推出来的：
-// 镜面法线 = 平分「镜片→眼睛」和「镜片→目标点」两个方向。
+// 镜片的朝向不照搬模型（模型是左右对称的，没有朝驾驶员调过），而是由「想让驾驶员从镜子里
+// 看到哪儿」反推出来：镜面法线 = 平分「镜片→眼睛」和「镜片→目标点」两个方向。
+// 镜片网格仍用模型的形状，所以和镜壳严丝合缝；反射画面按这个反推出来的镜面去投影。
 
-const DEG = Math.PI / 180;
 const EYE = new THREE.Vector3(...CAR.EYE);
-
-// 圆角矩形轮廓，逆时针（从正面看）
-function roundedRect(w, h, r, seg = 7) {
-  const pts = [];
-  const hw = w / 2 - r;
-  const hh = h / 2 - r;
-  const corners = [[hw, -hh, -90], [hw, hh, 0], [-hw, hh, 90], [-hw, -hh, 180]];
-  for (const [cx, cy, a0] of corners) {
-    for (let k = 0; k <= seg; k++) {
-      const a = (a0 + (90 * k) / seg) * DEG;
-      pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]);
-    }
-  }
-  return pts;
-}
-
-// 镜片：一片圆角矩形。顶点直接烘焙成车体局部坐标，着色器用它做投影贴图
-function glassGeometry(outline, w, h, matrix) {
-  const pos = [];
-  const uv = [];
-  const p = new THREE.Vector3();
-  const put = (x, y) => {
-    p.set(x, y, 0).applyMatrix4(matrix);
-    pos.push(p.x, p.y, p.z);
-    uv.push(x / w + 0.5, y / h + 0.5);
-  };
-  for (let k = 0; k < outline.length; k++) {
-    const a = outline[k];
-    const b = outline[(k + 1) % outline.length];
-    put(0, 0);
-    put(a[0], a[1]);
-    put(b[0], b[1]);
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  return g;
-}
-
-// 镜壳：把轮廓按一串 [缩放, 深度] 放样成一个向后收圆的壳体
-function shell(b, outline, steps) {
-  const rings = steps.map(([s, z, dy = 0]) => outline.map(([x, y]) => V3(x * s, y * s + dy, z)));
-  b.grid(rings, { closed: true });
-  b.fan(rings[rings.length - 1], true);
-}
+const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
 
 const MIRROR_FRAG = /* glsl */ `
 uniform sampler2D tMirror;
@@ -103,26 +58,34 @@ void main() {
 `;
 
 class PlanarMirror {
-  // center / target：车体局部坐标；size：[宽, 高, 圆角]；res：渲染分辨率
-  constructor({ center, target, size, res, convex = 1, kind, inner = 0 }) {
-    this.w = size[0];
-    this.h = size[1];
+  // positions：镜片的三角形顶点（车体局部坐标）；target：想从镜子里看到的点；res：渲染分辨率
+  constructor({ positions, target, res, convex = 1, kind, inner = 0 }) {
     this.convex = convex;
     this.res = res;
-    this.outline = roundedRect(size[0], size[1], size[2]);
 
-    const c = V3(...center);
+    const c = new THREE.Box3().setFromArray(positions).getCenter(V3(0, 0, 0));
     const toEye = EYE.clone().sub(c).normalize();
     const toTarget = V3(...target).sub(c).normalize();
     const n = toEye.add(toTarget).normalize();
     const x = V3(0, 1, 0).cross(n).normalize(); // 从正面看的右方
     const y = n.clone().cross(x).normalize();
-    this.matrix = new THREE.Matrix4().makeBasis(x, y, n).setPosition(c); // 镜片局部 → 车体局部
     this.normal = n;
-    // 镜片三个角（从正面看：左下、右下、左上）
-    this.pa = V3(-this.w / 2, -this.h / 2, 0).applyMatrix4(this.matrix);
-    this.pb = V3(this.w / 2, -this.h / 2, 0).applyMatrix4(this.matrix);
-    this.pc = V3(-this.w / 2, this.h / 2, 0).applyMatrix4(this.matrix);
+
+    // 镜片在镜面上的外接矩形（留一点余量），它决定反射相机的视锥
+    let hw = 0;
+    let hh = 0;
+    const d = V3(0, 0, 0);
+    for (let i = 0; i < positions.length; i += 3) {
+      d.set(positions[i], positions[i + 1], positions[i + 2]).sub(c);
+      hw = Math.max(hw, Math.abs(d.dot(x)));
+      hh = Math.max(hh, Math.abs(d.dot(y)));
+    }
+    this.w = hw * 2.1;
+    this.h = hh * 2.1;
+    // 矩形的三个角（从正面看：左下、右下、左上）
+    this.pa = c.clone().addScaledVector(x, -this.w / 2).addScaledVector(y, -this.h / 2);
+    this.pb = c.clone().addScaledVector(x, this.w / 2).addScaledVector(y, -this.h / 2);
+    this.pc = c.clone().addScaledVector(x, -this.w / 2).addScaledVector(y, this.h / 2);
 
     this.camera = new THREE.PerspectiveCamera();
     this.camera.matrixAutoUpdate = false;
@@ -160,8 +123,20 @@ class PlanarMirror {
         }
       `,
       fragmentShader: MIRROR_FRAG,
+      side: THREE.DoubleSide,
     });
-    this.glass = new THREE.Mesh(glassGeometry(this.outline, this.w, this.h, this.matrix), this.material);
+
+    // 镜片：模型的形状，uv 是它在外接矩形里的位置（水痕、车身边缘这些效果用）
+    const uv = new Float32Array((positions.length / 3) * 2);
+    for (let i = 0, j = 0; i < positions.length; i += 3, j += 2) {
+      d.set(positions[i], positions[i + 1], positions[i + 2]).sub(c);
+      uv[j] = d.dot(x) / this.w + 0.5;
+      uv[j + 1] = d.dot(y) / this.h + 0.5;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    this.glass = new THREE.Mesh(geo, this.material);
   }
 
   // eyeLocal：眼睛在车体局部坐标里的位置（会随车身晃动略有变化）
@@ -214,84 +189,49 @@ const _b = new THREE.Vector3();
 const _c = new THREE.Vector3();
 const _m = new THREE.Matrix4();
 
-export function createMirrors() {
-  // ------------------------------------------------------------ 车内后视镜
-  // 挂在风挡顶部正中、离玻璃约 9cm；从镜子里正好看到后风挡的中心
+export function createMirrors(model) {
+  // 模型里三面镜片在同一个网格里，按左右位置分开
+  const all = trianglePositions(model.mirrors);
+  const faces = { center: [], left: [], right: [] };
+  for (let i = 0; i < all.length; i += 9) {
+    const cx = (all[i] + all[i + 3] + all[i + 6]) / 3;
+    const key = Math.abs(cx) < 0.4 ? 'center' : cx < 0 ? 'left' : 'right';
+    for (let k = 0; k < 9; k++) faces[key].push(all[i + k]);
+  }
+
+  // 车内镜：从镜子里正好看到后风挡的中心
   const center = new PlanarMirror({
-    center: [0, 1.33, -0.235],
-    target: [0, 1.3, 1.9],
-    size: [0.235, 0.064, 0.02],
+    positions: new Float32Array(faces.center),
+    target: [0, 1.16, 1.45],
     res: [512, 144],
     kind: 0,
   });
   // 左右外后视镜：朝后、略向外、略向下。右镜离眼睛远，凸得更厉害，视野更广
   const left = new PlanarMirror({
-    center: [-1.03, 1.035, -0.6],
-    target: [-1.55, 0.9, 3.4],
-    size: [0.19, 0.122, 0.032],
+    positions: new Float32Array(faces.left),
+    target: [-1.4, 0.88, 3.4],
     res: [320, 208],
     convex: 1.9,
     kind: 1,
     inner: 1,
   });
   const right = new PlanarMirror({
-    center: [1.03, 1.035, -0.6],
-    target: [1.55, 0.9, 3.4],
-    size: [0.19, 0.122, 0.032],
+    positions: new Float32Array(faces.right),
+    target: [1.4, 0.88, 3.4],
     res: [320, 208],
     convex: 2.7,
     kind: 1,
     inner: -1,
   });
 
-  // ---- 车内镜的壳体和支架（属于车内场景，受车内光照）
+  // 车内镜属于车内场景；外后视镜属于外景（会被车窗上的水珠折射），只有主相机看得见
   const interior = new THREE.Group();
-  {
-    const b = new GeoBuilder().color(0.014, 0.014, 0.016).xform(center.matrix);
-    // 无边框镜：镜片四周只露出一圈很窄的黑边，壳体在背后收成圆润的一坨
-    shell(b, center.outline, [[0.98, 0.0012], [1.035, 0.0006], [1.05, -0.006], [1.0, -0.017], [0.8, -0.027], [0.42, -0.032]]);
-    // 球头支臂：从壳体背面伸向风挡上的底座
-    const back = V3(0, 0.004, -0.028).applyMatrix4(center.matrix);
-    const mount = V3(0, 1.392, -0.2);
-    b.xform(null);
-    b.cyl(back, mount, 0.011, 0.013, 10);
-    // 风挡上的传感器罩（雨量 / 摄像头），扁扁的一块贴在玻璃内侧
-    b.beam(V3(0, 1.365, -0.24), V3(0, 1.41, -0.165), 0.085, 0.03);
-    const housing = new THREE.Mesh(b.build(true), new THREE.MeshLambertMaterial({ color: 0xffffff, vertexColors: true, side: THREE.DoubleSide }));
-    housing.castShadow = true;
-    housing.receiveShadow = true;
-    interior.add(housing, center.glass);
-  }
-
-  // ---- 外后视镜的壳体和底座（属于外景，会被车窗上的水珠折射；只有主相机看得见）
+  interior.add(center.glass);
   const exterior = new THREE.Group();
-  {
-    const b = new GeoBuilder();
-    for (const m of [left, right]) {
-      const s = m === left ? -1 : 1;
-      b.color(0.035, 0.04, 0.05).data(0).xform(m.matrix);
-      // 镜片略微凹在壳口里；壳体向前收成流线型
-      shell(b, m.outline, [[0.97, -0.003], [1.07, 0.004], [1.12, -0.006], [1.1, -0.04, 0.002], [0.94, -0.085, 0.004], [0.62, -0.115, 0.006], [0.25, -0.126, 0.007]]);
-      b.xform(null);
-      // 连到车门三角窗位置的底座
-      b.beam(V3(s * 0.84, 0.975, -0.69), V3(s * 0.975, 0.985, -0.665), 0.075, 0.04, V3(0, 1, 0));
-    }
-    const housing = new THREE.Mesh(
-      b.build(),
-      worldMaterial({
-        surface: /* glsl */ `
-          vec2 bn = texture2D(tNoise, vUv * 2.5).rg - 0.5;
-          N = normalize(N + vec3(bn.x, bn.y, 0.0) * 0.2 * uRain);
-          gloss = 1.0;
-          shin = 300.0;
-        `,
-      }),
-    );
-    for (const o of [housing, left.glass, right.glass]) {
-      o.frustumCulled = false;
-      o.layers.set(2);
-      exterior.add(o);
-    }
+  for (const o of [left.glass, right.glass]) {
+    o.frustumCulled = false;
+    o.layers.set(2);
+    exterior.add(o);
   }
 
   const list = [center, left, right];

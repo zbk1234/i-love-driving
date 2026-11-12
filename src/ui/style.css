@@ -80,6 +80,30 @@ h1 {
 #start:hover, #start:focus-visible { background: var(--amber); color: #17100a; outline: none; }
 #start[disabled] { opacity: 0.5; cursor: progress; }
 
+#quality {
+  margin-top: 22px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+#quality span { margin-right: 6px; letter-spacing: 0.2em; }
+#quality button {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: transparent;
+  color: var(--ink-dim);
+  font: inherit;
+  min-width: 48px;
+  padding: 6px 12px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+#quality button:hover, #quality button:focus-visible { border-color: rgba(255, 179, 92, 0.75); color: #ffd9a8; outline: none; }
+#quality button[aria-pressed="true"] { border-color: rgba(255, 179, 92, 0.75); background: rgba(255, 179, 92, 0.16); color: #ffd9a8; }
+
 .keys {
   margin: 38px 0 0;
   display: grid;

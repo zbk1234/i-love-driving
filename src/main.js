@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ROAD, CAR } from './config.js';
+import { ROAD, CAR, QUALITY, QUALITY_KEYS, MAX_DROPS } from './config.js';
 import { G } from './core/globals.js';
 import { roadState, setOrigin, roadX } from './core/roadmath.js';
 import { makeNoiseTexture } from './core/noise.js';
@@ -14,6 +14,7 @@ import { createSky } from './world/sky.js';
 import { Traffic } from './world/traffic.js';
 import { createRain } from './world/rain.js';
 import { Vehicle } from './car/vehicle.js';
+import { loadCarModel } from './car/model.js';
 import { createCabin } from './car/cabin.js';
 import { createExterior } from './car/exterior.js';
 import { Wipers, WIPER_LABELS } from './car/wipers.js';
@@ -34,10 +35,11 @@ function fatal(msg) {
   $('intro').classList.add('gone');
 }
 
-// 调试用的地址栏参数：?autostart&warp=20&t=night&rain=3&scale=0.5&look=-30,5&manual
+// 调试用的地址栏参数：?autostart&warp=20&t=night&rain=3&q=high&look=-30,5&manual
+// 画质平时用预设（开始页 / Q 键）；?scale= ?ws= ?msaa= ?drops= 可以单独覆盖预设里的某一项
 const params = new URLSearchParams(location.search);
 
-function main() {
+async function main() {
   const canvas = $('view');
   let renderer;
   try {
@@ -46,6 +48,15 @@ function main() {
     fatal('无法创建 WebGL2 上下文。\n请使用较新的 Chrome / Edge，并确认已开启硬件加速。');
     return;
   }
+  // 车模读完之前不能开始
+  const startBtn = $('start');
+  const startLabel = startBtn.textContent;
+  startBtn.disabled = true;
+  startBtn.textContent = '正在加载车模…';
+  const model = await loadCarModel();
+  startBtn.disabled = false;
+  startBtn.textContent = startLabel;
+
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
 
@@ -68,18 +79,18 @@ function main() {
   world.add(createSky());
   const traffic = new Traffic();
   world.add(traffic.group);
-  const rain = createRain(Number(params.get('drops')) || 5200);
+  const rain = createRain(Math.max(MAX_DROPS, Number(params.get('drops')) || 0));
   world.add(rain.mesh);
 
-  const carGroup = new THREE.Group(); // 自车外部（引擎盖、雨刮）
-  carGroup.add(createExterior());
+  const carGroup = new THREE.Group(); // 自车外部（车身、雨刮、外后视镜）
+  carGroup.add(createExterior(model));
   const wipers = new Wipers();
   carGroup.add(wipers.group);
   world.add(carGroup);
 
-  const cabin = createCabin();
+  const cabin = createCabin(model);
   cabinScene.add(cabin.group);
-  const mirrors = createMirrors();
+  const mirrors = createMirrors(model);
   cabin.group.add(mirrors.interior);
   carGroup.add(mirrors.exterior);
   const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
@@ -108,8 +119,7 @@ function main() {
   camera.layers.enable(1);
   camera.layers.enable(2);
 
-  // 默认 FXAA + 外景 0.8 倍分辨率；独显可以加 ?msaa=4&ws=1
-  const pipeline = new Pipeline(renderer, { msaa: Number(params.get('msaa')) || 0, worldScale: Number(params.get('ws')) || 0.8 });
+  const pipeline = new Pipeline(renderer);
   if (params.has('prof')) pipeline.prof = {};
   const vehicle = new Vehicle();
   const env = new Environment(params.get('t') || 'dusk', params.has('rain') ? clamp(Number(params.get('rain')), 0, 3) : 2);
@@ -125,10 +135,12 @@ function main() {
   // ------------------------------------------------------------------ 尺寸与动态分辨率
   const fixedScale = Number(params.get('scale')) || 0;
   let dynScale = 1;
+  let quality = QUALITY.mid;
+  let qualityKey = 'mid';
   function resize() {
     const w = window.innerWidth;
     const h = window.innerHeight;
-    const pr = fixedScale || Math.min(window.devicePixelRatio || 1, 1.25) * dynScale;
+    const pr = fixedScale || Math.min(window.devicePixelRatio || 1, quality.pixelRatio) * dynScale;
     renderer.setPixelRatio(pr);
     renderer.setSize(w, h, false);
     const bw = Math.floor(w * pr);
@@ -141,7 +153,47 @@ function main() {
     G.uPixelAngle.value = (2 * Math.tan((camera.fov * DEG) / 2)) / (bh * pipeline.worldScale);
   }
   window.addEventListener('resize', resize);
-  resize();
+
+  // ------------------------------------------------------------------ 画质预设
+  const qualityButtons = [...document.querySelectorAll('#quality [data-q]')];
+  function setQuality(key, remember = true) {
+    if (!QUALITY[key]) key = 'mid';
+    qualityKey = key;
+    quality = QUALITY[key];
+    dynScale = 1;
+    pipeline.configure({
+      msaa: params.has('msaa') ? Number(params.get('msaa')) || 0 : quality.msaa,
+      worldScale: Number(params.get('ws')) || quality.world,
+    });
+    rain.setCount(Number(params.get('drops')) || quality.drops);
+    for (const l of lampLights) {
+      l.castShadow = quality.shadow > 0;
+      if (l.shadow.mapSize.x !== quality.shadow && quality.shadow > 0) {
+        l.shadow.mapSize.set(quality.shadow, quality.shadow);
+        l.shadow.map?.dispose(); // 换尺寸要重建阴影贴图
+        l.shadow.map = null;
+      }
+    }
+    for (const b of qualityButtons) b.setAttribute('aria-pressed', String(b.dataset.q === key));
+    if (remember) {
+      try {
+        localStorage.setItem('rd.quality', key);
+      } catch {
+        /* 隐私模式下 localStorage 不可用，忽略 */
+      }
+    }
+    resize();
+  }
+  for (const b of qualityButtons) b.addEventListener('click', () => setQuality(b.dataset.q));
+  {
+    let saved = null;
+    try {
+      saved = localStorage.getItem('rd.quality');
+    } catch {
+      /* 同上 */
+    }
+    setQuality(params.get('q') || saved || 'mid', false);
+  }
 
   // ------------------------------------------------------------------ 提示文字
   const toastEl = $('toast');
@@ -161,6 +213,7 @@ function main() {
     'R         雨量',
     'T         傍晚 / 夜晚 / 白天',
     'L         远光灯',
+    'Q         画质：低 / 中 / 高 / 极高',
     'K         来一道闪电',
     'PgUp/PgDn 座椅升 / 降',
     'M         静音      H  关闭帮助',
@@ -211,6 +264,10 @@ function main() {
         break;
       case 'KeyK':
         env.triggerLightning();
+        break;
+      case 'KeyQ':
+        setQuality(QUALITY_KEYS[(QUALITY_KEYS.indexOf(qualityKey) + 1) % QUALITY_KEYS.length]);
+        toast(`画质：${quality.name}`);
         break;
       case 'KeyM':
         audio.setMuted(!audio.muted);
@@ -394,8 +451,7 @@ function main() {
       l.position.copy(l.target.position).addScaledVector(tmpV, 8);
       l.shadow.needsUpdate = l.intensity > 0.04;
     });
-    cabin.matCluster.color.setScalar(env.cur.screens);
-    cabin.matScreen.color.setScalar(env.cur.screens * 0.7);
+    for (const sc of cabin.screens) sc.material.color.setScalar(env.cur.screens * sc.gain);
 
     // ---- 方向盘（约 14:1 的转向比）
     cabin.wheel.rotation.z = vehicle.steer * 14;
@@ -488,7 +544,7 @@ function main() {
     render();
 
     // 动态分辨率：掉到约 50 帧以下就降一档；稳稳跑满一阵子后再试着升回去
-    if (!fixedScale && !debug.paused) {
+    if (!fixedScale && quality.dynamic && !debug.paused) {
       avg += (raw * 1000 - avg) * 0.05;
       slowT = avg > 19.5 ? slowT + raw : 0;
       fastT = avg < 17.4 ? fastT + raw : 0;
@@ -510,12 +566,10 @@ function main() {
   }
   requestAnimationFrame(frame);
 
-  Object.assign(debug, { renderer, world, cabinScene, camera, vehicle, traffic, env, wipers, pipeline, audio, G, simulate, render });
+  Object.assign(debug, { renderer, world, cabinScene, camera, vehicle, traffic, env, wipers, pipeline, audio, G, simulate, render, setQuality });
 }
 
-try {
-  main();
-} catch (e) {
+main().catch((e) => {
   console.error(e);
   fatal(`启动失败：${e.message}`);
-}
+});
