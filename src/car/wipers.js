@@ -67,7 +67,7 @@ function fillStrip(geo, n, cfg, angle, r0, r1, halfW, lift, height) {
 
 export class Wipers {
   constructor() {
-    this.mode = 'auto';
+    this.mode = 'low'; // 开局用低速；自动档在默认的大雨里会直接上高速
     this.cycleStart = -1e3;
     this.prevStart = -2e3;
     this.dur = 1.2;
