@@ -6,6 +6,7 @@ import { makeNoiseTexture } from './core/noise.js';
 import { Pipeline } from './core/pipeline.js';
 import { Environment } from './core/env.js';
 import { AudioEngine } from './core/audio.js';
+import { CarStereo } from './core/music.js';
 import { Input } from './core/input.js';
 import { Placer } from './world/materials.js';
 import { createRoad } from './world/road.js';
@@ -36,7 +37,7 @@ function fatal(msg) {
   $('intro').classList.add('gone');
 }
 
-// 调试用的地址栏参数：?autostart&warp=20&t=night&rain=3&q=high&look=-30,5&manual
+// 调试用的地址栏参数：?autostart&warp=20&t=night&rain=3&q=high&look=-30,5&manual&nosample
 // 画质平时用预设（开始页 / Q 键）；?scale= ?ws= ?msaa= ?drops= 可以单独覆盖预设里的某一项
 const params = new URLSearchParams(location.search);
 
@@ -125,7 +126,7 @@ async function main() {
   if (params.has('prof')) pipeline.prof = {};
   const vehicle = new Vehicle();
   const env = new Environment(params.get('t') || 'dusk', params.has('rain') ? clamp(Number(params.get('rain')), 0, 3) : 2);
-  const audio = new AudioEngine();
+  const audio = new AudioEngine({ samples: !params.has('nosample') });
   const input = new Input();
   if (params.has('manual')) vehicle.setAuto(false);
   if (params.has('wiper')) wipers.mode = params.get('wiper');
@@ -133,6 +134,7 @@ async function main() {
 
   env.onThunder = (delay, strength) => audio.thunder(delay, strength);
   wipers.onEvent = (type, dur) => audio.wiper(type, dur);
+  traffic.onPass = (ttc, rel, du, heavy) => audio.pass(ttc, rel, du, heavy);
 
   // ------------------------------------------------------------------ 尺寸与动态分辨率
   const fixedScale = Number(params.get('scale')) || 0;
@@ -219,8 +221,19 @@ async function main() {
     'Q         画质：低 / 中 / 高 / 极高',
     'K         来一道闪电',
     'PgUp/PgDn 座椅升 / 降',
+    'O         选择本地歌曲（也可以直接拖进窗口）',
+    'P / N     音乐 播放暂停 / 下一首，[ ] 音量',
     'M         静音      H  关闭帮助',
   ].join('\n');
+
+  // ------------------------------------------------------------------ 车载音响
+  const stereo = new CarStereo(audio);
+  stereo.onChange = toast;
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (started && e.dataTransfer?.files.length) stereo.add(e.dataTransfer.files);
+  });
 
   let highBeam = false;
   let started = false;
@@ -278,6 +291,21 @@ async function main() {
         break;
       case 'KeyH':
         helpEl.hidden = !helpEl.hidden;
+        break;
+      case 'KeyO':
+        stereo.open();
+        break;
+      case 'KeyP':
+        stereo.toggle();
+        break;
+      case 'KeyN':
+        stereo.next();
+        break;
+      case 'BracketLeft':
+        stereo.setVolume(-0.1);
+        break;
+      case 'BracketRight':
+        stereo.setVolume(0.1);
         break;
       case 'PageUp':
         adjustSeat(0.01);
@@ -467,15 +495,22 @@ async function main() {
     const targetRpm = 900 + clamp((v - lo) / (GEAR_TOP[gear - 1] - lo), 0, 1) * 1500 + vehicle.throttle * 350;
     rpm += (targetRpm - rpm) * Math.min(1, dt * 5);
 
-    // ---- 转向灯
+    // ---- 转向灯：有实录时箭头跟着继电器循环的相位亮灭，否则自己计时、每次切换响一声合成的哒
     if (vehicle.blinker !== 0) {
-      blinkT -= dt;
-      if (blinkT <= 0) {
-        blinkOn = !blinkOn;
-        blinkT = 0.37;
-        audio.blinker(blinkOn);
+      audio.blinkStart();
+      const lit = audio.blinkLit();
+      if (lit !== null) {
+        blinkOn = lit;
+      } else {
+        blinkT -= dt;
+        if (blinkT <= 0) {
+          blinkOn = !blinkOn;
+          blinkT = 0.37;
+          audio.blinker(blinkOn);
+        }
       }
     } else {
+      audio.blinkStop();
       blinkOn = false;
       blinkT = 0;
     }

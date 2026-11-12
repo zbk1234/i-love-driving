@@ -3,3 +3,6 @@ dist
 .DS_Store
 .playwright-mcp
 blender/out
+.tmp
+# 本地歌曲：只在开发服务器里播放，不进仓库、不进打包产物
+public/music

@@ -27,6 +27,8 @@ function makeSpriteSet(capacity, attrs, material) {
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const rand = (a, b) => a + Math.random() * (b - a);
+// 预计还有几秒并排时通知音频播放驶过声（实录里车开到最近要 3 s 左右）
+const PASS_LEAD = 3.2;
 
 export class Traffic {
   constructor() {
@@ -34,6 +36,7 @@ export class Traffic {
     this.same = [];
     this.opp = [];
     this.passby = { gain: 0, pan: 0 };
+    this.onPass = null; // (ttc, 相对速度, 横向间距, 是否大车) => void
 
     const carMat = worldMaterial({
       surface: /* glsl */ `
@@ -62,7 +65,7 @@ export class Traffic {
       this.group.add(mesh);
       return {
         mesh, kind, spec: SPECS[kind], dir, heavy: kind === 'truck' || kind === 'bus',
-        active: false, u: 0, targetU: 0, z: 0, v: 0, vDes: 20, brake: 0, blocked: 0, blink: 0, cool: rand(2, 8),
+        active: false, u: 0, targetU: 0, z: 0, v: 0, vDes: 20, brake: 0, blocked: 0, blink: 0, cool: rand(2, 8), passCue: false,
         led: i % 3 === 0,
       };
     };
@@ -201,7 +204,7 @@ export class Traffic {
     const u = laneCenter(lane) + rand(-0.15, 0.15);
     if (!this._laneClear(this.same, c, u, z, 55)) return;
     if (Math.abs(u - player.u) < 2.2 && Math.abs(dz) < 60) return;
-    Object.assign(c, { u, targetU: u, z, v: vDes, vDes, active: true, brake: 0, blocked: 0, blink: 0 });
+    Object.assign(c, { u, targetU: u, z, v: vDes, vDes, active: true, brake: 0, blocked: 0, blink: 0, passCue: false });
     c.mesh.visible = true;
   }
 
@@ -340,6 +343,16 @@ export class Traffic {
           pg = g;
           pp = Math.sign(du) * 0.7;
         }
+      }
+
+      // 超车 / 被超车：在相邻一两条车道、正在靠近，预计 PASS_LEAD 秒内并排就触发一次；拉开后再复位
+      const rel = c.v - player.speed;
+      const ttc = dz / rel;
+      if (c.passCue) {
+        if (ttc < 0) c.passCue = false;
+      } else if (Math.abs(rel) > 1.5 && ttc > 0 && ttc < PASS_LEAD && Math.abs(du) > 1.5 && Math.abs(du) < 9) {
+        c.passCue = true;
+        this.onPass?.(ttc, Math.abs(rel), du, c.heavy);
       }
     }
 
