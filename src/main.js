@@ -18,6 +18,7 @@ import { loadCarModel } from './car/model.js';
 import { createCabin } from './car/cabin.js';
 import { createExterior } from './car/exterior.js';
 import { Wipers, WIPER_LABELS } from './car/wipers.js';
+import { createDropSims } from './car/dropsim.js';
 import { createMirrors } from './car/mirrors.js';
 
 const $ = (id) => document.getElementById(id);
@@ -90,6 +91,7 @@ async function main() {
 
   const cabin = createCabin(model);
   cabinScene.add(cabin.group);
+  const dropSims = createDropSims(renderer, cabin.glass);
   const mirrors = createMirrors(model);
   cabin.group.add(mirrors.interior);
   carGroup.add(mirrors.exterior);
@@ -166,6 +168,7 @@ async function main() {
       worldScale: Number(params.get('ws')) || quality.world,
     });
     rain.setCount(Number(params.get('drops')) || quality.drops);
+    dropSims.setResolution(params.has('sim') ? Number(params.get('sim')) || 0 : quality.sim);
     for (const l of lampLights) {
       l.castShadow = quality.shadow > 0;
       if (l.shadow.mapSize.x !== quality.shadow && quality.shadow > 0) {
@@ -414,6 +417,7 @@ async function main() {
     wipers.update(time, env.rain);
     wipers.applyTo(cabin.glass.front);
     const v = vehicle.speed;
+    dropSims.update(dt, env.rain, v, wipers);
     // 前挡：低速时水珠往下淌，超过约 30km/h 被气流顶着往上爬
     const rateF = clamp(0.25 - v * 0.03, -0.9, 0.25);
     slideFront += rateF * dt;
@@ -509,6 +513,7 @@ async function main() {
   }
 
   function render() {
+    dropSims.render();
     pipeline.render({
       world,
       cabin: cabinScene,
@@ -566,7 +571,7 @@ async function main() {
   }
   requestAnimationFrame(frame);
 
-  Object.assign(debug, { renderer, world, cabinScene, camera, vehicle, traffic, env, wipers, pipeline, audio, G, simulate, render, setQuality });
+  Object.assign(debug, { renderer, world, cabinScene, camera, vehicle, traffic, env, wipers, pipeline, audio, G, simulate, render, setQuality, dropSims });
 }
 
 main().catch((e) => {

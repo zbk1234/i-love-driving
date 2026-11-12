@@ -73,11 +73,12 @@ export const WIPERS = [
 //   msaa       多重采样抗锯齿的采样数（0 = 只用 FXAA）
 //   drops      雨丝数量
 //   shadow     车内阴影贴图的边长（0 = 不要阴影）
+//   sim        车窗水珠模拟的贴图宽度（0 = 不模拟，用解析的水珠）
 export const QUALITY = {
-  low: { name: '低', pixelRatio: 0.75, dynamic: true, world: 0.7, msaa: 0, drops: 2600, shadow: 0 },
-  mid: { name: '中', pixelRatio: 1.25, dynamic: true, world: 0.8, msaa: 0, drops: 5200, shadow: 768 },
-  high: { name: '高', pixelRatio: 1.5, dynamic: false, world: 1, msaa: 2, drops: 7000, shadow: 1024 },
-  ultra: { name: '极高', pixelRatio: 2, dynamic: false, world: 1, msaa: 4, drops: 9000, shadow: 2048 },
+  low: { name: '低', pixelRatio: 0.75, dynamic: true, world: 0.7, msaa: 0, drops: 2600, shadow: 0, sim: 0 },
+  mid: { name: '中', pixelRatio: 1.25, dynamic: true, world: 0.8, msaa: 0, drops: 5200, shadow: 768, sim: 1536 },
+  high: { name: '高', pixelRatio: 1.5, dynamic: false, world: 1, msaa: 2, drops: 7000, shadow: 1024, sim: 2048 },
+  ultra: { name: '极高', pixelRatio: 2, dynamic: false, world: 1, msaa: 4, drops: 9000, shadow: 2048, sim: 3072 },
 };
 export const QUALITY_KEYS = Object.keys(QUALITY);
 export const MAX_DROPS = Math.max(...QUALITY_KEYS.map((k) => QUALITY[k].drops));

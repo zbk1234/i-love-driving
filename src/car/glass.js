@@ -116,6 +116,10 @@ uniform float uLens;
 uniform float uWet;       // 水膜厚度系数：前挡 1，侧窗薄一些
 uniform vec3 uSkyAmb;
 uniform float uFlash;
+uniform float uSim;        // 是否有水珠模拟（dropsim.js）
+uniform sampler2D tDrops;  // 模拟出来的大水珠：xy = 水珠内归一化位置 × 遮罩，a = 遮罩
+uniform sampler2D tClean;  // 最近一次被滑过的水珠「洗干净」的时刻
+uniform vec4 uSimRect;     // 模拟覆盖的玻璃坐标范围：x0, y0, 1/宽, 1/高
 varying vec2 vG;
 
 float hash11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
@@ -260,10 +264,23 @@ void main() {
   }
   float rain = uRain;
   vec4 nf = texture2D(tNoise, g * 7.0);
+
+  // ---- 模拟的大水珠。它们滑过的地方算作「刚洗过」，和雨刮刮过是一回事
+  bool sim = false;
+  vec4 S = vec4(0.0);
+  if (uSim > 0.5) {
+    vec2 sg = (g - uSimRect.xy) * uSimRect.zw;
+    if (sg.x > 0.0 && sg.x < 1.0 && sg.y > 0.0 && sg.y < 1.0) {
+      sim = true;
+      S = texture2D(tDrops, sg);
+      float ct = texture2D(tClean, sg).r;
+      if (ct > 0.0) since = min(since, max(uTime - ct, 0.0));
+    }
+  }
   // 水珠成片：有的地方密，有的地方稀
   float patchy = 0.5 + 1.0 * nf.b;
 
-  // ---- 四层由小到大的静止水珠
+  // ---- 由小到大的静止水珠。有模拟时只留细的三层，最大的那些交给模拟
   vec3 acc = vec3(0.0);
   vec3 L = dropsLayer(g, vec2(0.955, 0.296), 0.0034, 2.6, since, (0.22 + 0.6 * rain) * patchy, 11.0);
   acc = mix(acc, L, L.z);
@@ -271,24 +288,29 @@ void main() {
   acc = mix(acc, L, L.z);
   L = dropsLayer(g + 0.71, vec2(-0.416, 0.909), 0.0125, 9.0, since, (0.14 + 0.5 * rain) * patchy, 37.0);
   acc = mix(acc, L, L.z);
+  float trail = 0.0;
+  if (sim) {
+    acc.xy = acc.xy * (1.0 - S.a) + S.xy;
+    acc.z = max(acc.z, S.a);
+  } else {
   L = dropsLayer(g + 0.13, vec2(-0.857, 0.516), 0.024, 15.0, since, (0.06 + 0.4 * rain) * patchy, 59.0);
   acc = mix(acc, L, L.z);
 
   // ---- 滑动水珠
-  float trail = 0.0;
   if (uSlideA.w > 0.01) {
-    vec4 S = slideLayer(g, uSlideA.xyz, uSlideSign.x, since, rain, 51.0);
-    float w = S.z * uSlideA.w;
-    acc.xy = mix(acc.xy, S.xy, w);
+    vec4 Sl = slideLayer(g, uSlideA.xyz, uSlideSign.x, since, rain, 51.0);
+    float w = Sl.z * uSlideA.w;
+    acc.xy = mix(acc.xy, Sl.xy, w);
     acc.z = max(acc.z, w);
-    trail = max(trail, S.w * uSlideA.w);
+    trail = max(trail, Sl.w * uSlideA.w);
   }
   if (uSlideB.w > 0.01) {
-    vec4 S = slideLayer(g + 0.53, uSlideB.xyz, uSlideSign.y, since, rain, 77.0);
-    float w = S.z * uSlideB.w;
-    acc.xy = mix(acc.xy, S.xy, w);
+    vec4 Sl = slideLayer(g + 0.53, uSlideB.xyz, uSlideSign.y, since, rain, 77.0);
+    float w = Sl.z * uSlideB.w;
+    acc.xy = mix(acc.xy, Sl.xy, w);
     acc.z = max(acc.z, w);
-    trail = max(trail, S.w * uSlideB.w);
+    trail = max(trail, Sl.w * uSlideB.w);
+  }
   }
 
   // ---- 雨刮聚拢的水盖在最上面
@@ -359,6 +381,10 @@ export function createGlassMaterial({ wipers = false, tint = [0.86, 0.9, 0.88], 
       uWet: { value: wet },
       uSkyAmb: G.uSkyAmb,
       uFlash: G.uFlash,
+      uSim: { value: 0 },
+      tDrops: { value: null },
+      tClean: { value: null },
+      uSimRect: { value: new THREE.Vector4(0, 0, 1, 1) },
     },
     vertexShader: /* glsl */ `
       attribute vec2 aG;
