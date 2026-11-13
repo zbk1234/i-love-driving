@@ -5,15 +5,15 @@ import { worldMaterial, PLACE_MODEL } from '../world/materials.js';
 // 它们属于外景通道（会被玻璃上的水珠折射，也受路灯的解析光照），放在图层 2：只有主相机能看见。
 // 只留下从车窗里看得见的那部分三角形：车头、车尾的上表面，和车身两侧窗线附近的一条。
 
-// 材质名 → [颜色（线性空间）, 是否车漆]
+// 材质名 → 是否车漆（颜色照搬车模）
 const PARTS = {
-  '23___Default': [[0.74, 0.74, 0.74], 1], // 白色车漆
-  '17___Default': [[0.42, 0.42, 0.42], 1], // 车尾的浅灰部分
-  '24___Default': [[0.018, 0.018, 0.018], 0], // 黑色饰条、格栅、窗框
+  body: 1, // 车漆
+  black_shiny: 0, // 亮黑窗框、外后视镜底座
+  chrome_d: 0, // 窗沿、镜壳上的暗铬饰条
 };
 
-// 三角形的重心是否落在「从车窗里看得见」的区域
-const visible = (x, y, z) => y > 0.72 && (z < -0.85 || z > 1.7 || Math.abs(x) > 0.74);
+// 三角形的重心是否落在「从车窗里看得见」的区域：风挡下沿往前的引擎盖、尾门玻璃往后、门玻璃外侧
+const visible = (x, y, z) => y > 0.72 && (z < -1.1 || z > 1.85 || Math.abs(x) > 0.78);
 
 function visibleSubset(geometry) {
   const g = geometry.index ? geometry.toNonIndexed() : geometry;
@@ -40,15 +40,15 @@ function visibleSubset(geometry) {
 export function createExterior(model) {
   const group = new THREE.Group();
   for (const part of model.body) {
-    const spec = PARTS[part.name];
-    if (!spec) continue;
+    const paint = PARTS[part.name];
+    if (paint === undefined) continue;
     const geometry = visibleSubset(part.geometry);
     if (!geometry.attributes.position.count) continue;
     const mat = worldMaterial({
       place: `${PLACE_MODEL} vLp = position;`,
       vertPars: 'varying vec3 vLp;',
       fragPars: 'varying vec3 vLp; uniform vec3 uColor; uniform float uPaint;',
-      uniforms: { uColor: { value: new THREE.Color(...spec[0]) }, uPaint: { value: spec[1] } },
+      uniforms: { uColor: { value: part.material.color.clone() }, uPaint: { value: paint } },
       surface: /* glsl */ `
         albedo = uColor;
         if (uPaint > 0.5) {

@@ -199,10 +199,10 @@ export function createMirrors(model) {
     for (let k = 0; k < 9; k++) faces[key].push(all[i + k]);
   }
 
-  // 车内镜：从镜子里正好看到后风挡的中心
+  // 车内镜：从镜子里正好看到尾门玻璃的中心
   const center = new PlanarMirror({
     positions: new Float32Array(faces.center),
-    target: [0, 1.16, 1.45],
+    target: [0, 1.2, 2.1],
     res: [512, 144],
     kind: 0,
   });

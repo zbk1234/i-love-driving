@@ -7,6 +7,12 @@ import { roadX, roadYaw, roadCurvature } from '../core/roadmath.js';
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
+// 电池：100 kWh 的电池包，综合能耗约 15.5 kWh/100km（续航按它估算）；空调、屏幕这些常开的负载约 1.5 kW
+const BATTERY_KWH = 100;
+const KWH_PER_KM = 0.155;
+const AUX_KW = 1.5;
+const MASS = 2200;
+
 export class Vehicle {
   constructor() {
     this.z = 0;
@@ -26,11 +32,21 @@ export class Vehicle {
     this.bump = 0; // 追尾冲击
     this.throttle = 0;
     this.braking = false;
+    this.power = 0; // 电驱功率（kW），负数是动能回收
+    this.energy = 0.77 * BATTERY_KWH; // 电池剩余电量（kWh）
     this._adjust = 0;
   }
 
   get u() {
     return this.x - roadX(this.z);
+  }
+
+  get soc() {
+    return this.energy / BATTERY_KWH;
+  }
+
+  get range() {
+    return this.energy / KWH_PER_KM;
   }
 
   changeLane(dir, traffic) {
@@ -114,6 +130,13 @@ export class Vehicle {
 
     this.speed = Math.max(0, this.speed + acc * dt);
     this.accel += (acc - this.accel) * Math.min(1, dt * 5);
+
+    // ---- 电驱功率 = (惯性力 + 滚阻 + 风阻) × 车速；松油门、刹车时回收，最多 60 kW。按功率从电池里扣电，回收的按 70% 存回去
+    const v = this.speed;
+    const kw = v > 0.3 ? Math.max(-60, ((MASS * this.accel + 300 + 0.42 * v * v) * v) / 1000) : 0;
+    this.power += (kw - this.power) * Math.min(1, dt * 3);
+    const draw = this.power > 0 ? this.power / 0.92 : this.power * 0.7;
+    this.energy = clamp(this.energy - ((draw + AUX_KW) * dt) / 3600, 0, BATTERY_KWH);
 
     const yawRate = (this.speed / L) * Math.tan(this.steer);
     this.yaw += yawRate * dt;

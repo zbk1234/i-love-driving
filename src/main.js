@@ -563,7 +563,7 @@ async function main() {
       if (started) toast(`巡航车速 ${Math.round(vehicle.cruise * 3.6)} km/h`);
     }
 
-    cabin.cluster.update(dt, {
+    const dash = {
       speed: v,
       rpm,
       gear: 'D',
@@ -576,8 +576,18 @@ async function main() {
       blinker: vehicle.blinker,
       blinkOn,
       temp: 16,
-    });
-    cabin.screen.update(dt);
+      // 仪表的车道感应、电量续航用
+      z: vehicle.z,
+      u: vehicle.u,
+      targetLane: vehicle.targetLane,
+      braking: vehicle.braking,
+      power: vehicle.power,
+      soc: vehicle.soc,
+      range: vehicle.range,
+      cars: traffic.same,
+    };
+    cabin.cluster.update(dt, dash);
+    cabin.screen.update(dt, dash);
 
     audio.update({
       speed: v,
