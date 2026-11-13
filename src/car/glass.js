@@ -134,6 +134,10 @@ uniform vec4 uSimRect;     // 模拟覆盖的玻璃坐标范围：x0, y0, 1/宽,
 uniform vec4 uWin;         // 电动车窗：下降方向.xyz（车体坐标）、已降下的距离
 uniform vec2 uSill;        // 门槛密封条：gy = x + y·gx
 uniform float uSeal[SEAL_N]; // 玻璃上各高度（0 ~ SEAL_H）最近一次经过密封条的时刻
+uniform float uHasHud;     // 前挡 HUD（hud.js）：投在玻璃内表面上的角色画面
+uniform sampler2D tHud;    // 预乘 alpha
+uniform vec4 uHudRect;     // HUD 占的玻璃坐标范围：x0, y0, 1/宽, 1/高
+uniform float uHud;        // HUD 亮度（0 = 关）
 varying vec2 vG;
 varying float vWin;
 
@@ -468,6 +472,18 @@ void main() {
 
   col *= uTint;
 
+  // ---- HUD：光从玻璃内表面反射进眼睛，不经过外面的水珠、也不被玻璃染色，叠在最上面。
+  // 画面覆盖的地方稍微压暗一点外景（否则白天几乎看不见）；外表面再反射一次，在上方留一道很淡的重影
+  if (uHasHud > 0.5 && uHud > 0.001) {
+    vec2 hu = (g - uHudRect.xy) * uHudRect.zw;
+    if (hu.x > 0.0 && hu.x < 1.0 && hu.y > 0.0 && hu.y < 1.04) {
+      vec4 h = hu.y < 1.0 ? texture2D(tHud, hu) : vec4(0.0);
+      vec4 h2 = hu.y > 0.012 ? texture2D(tHud, hu - vec2(0.0, 0.012)) : vec4(0.0);
+      float k = min(uHud, 1.0);
+      col = col * (1.0 - 0.45 * h.a * k) + (h.rgb + 0.12 * h2.rgb) * uHud;
+    }
+  }
+
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -504,6 +520,10 @@ export function createGlassMaterial({ wipers = false, tint = [0.86, 0.9, 0.88], 
       uWin: { value: new THREE.Vector4(0, -1, 0, 0) },
       uSill: { value: new THREE.Vector2(...WINDOW.SILL) },
       uSeal: { value: new Float32Array(SEAL_N).fill(-1e4) },
+      uHasHud: { value: 0 },
+      tHud: { value: null },
+      uHudRect: { value: new THREE.Vector4(0, 0, 1, 1) },
+      uHud: { value: 0 },
     },
     vertexShader: /* glsl */ `
       attribute vec2 aG;

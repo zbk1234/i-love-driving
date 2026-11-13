@@ -75,6 +75,17 @@ export const WINDOW = {
   TIME: 3.4, // 升降全程的秒数
 };
 
+// 前挡 HUD：投在主驾正前方风挡下部的 LivLiv 角色（hud.js）。数字是前挡的玻璃坐标：
+//   CX 中心的 gx，Y0 下沿的 gy，H 沿斜面的高度；宽度按角色画面的宽高比、从驾驶员眼睛看过去不变形自动算出
+//   MODEL 角色所在目录（public 下），来自 livliv-dev/player 仓库的精选角色
+export const HUD = {
+  MODEL: 'characters/k01/',
+  ASPECT: 2 / 3,
+  CX: -0.35,
+  Y0: 0.02,
+  H: 0.4,
+};
+
 // 画质预设。开始页上可以选，行驶中按 Q 切换，选择会记在本机。
 //   pixelRatio 渲染分辨率相对屏幕像素的上限（高分屏上才会超过 1）
 //   dynamic    帧率不够时是否自动降低分辨率

@@ -14,6 +14,8 @@ import { createProps } from './world/props.js';
 import { createSky } from './world/sky.js';
 import { Traffic } from './world/traffic.js';
 import { createRain } from './world/rain.js';
+
+
 import { Vehicle } from './car/vehicle.js';
 import { loadCarModel } from './car/model.js';
 import { createCabin } from './car/cabin.js';
@@ -22,6 +24,7 @@ import { Wipers, WIPER_LABELS } from './car/wipers.js';
 import { createDropSims, edgeFlow } from './car/dropsim.js';
 import { createMirrors } from './car/mirrors.js';
 import { PowerWindow } from './car/window.js';
+import { WindshieldHud } from './car/hud.js';
 
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -97,6 +100,13 @@ async function main() {
   // 主驾车窗：降进车门的那部分玻璃上不再有水珠
   const driverWin = new PowerWindow(cabin.glass.left, cabin.winDown);
   dropSims.sims.left.hidden = (x, y) => driverWin.hides(x, y);
+  // 前挡 HUD 上的 LivLiv 角色，显示与否记在本机
+  const hud = new WindshieldHud(cabin.glass.front);
+  try {
+    if (localStorage.getItem('rd.hud') === '0') hud.toggle();
+  } catch {
+    /* 隐私模式下 localStorage 不可用，忽略 */
+  }
   const mirrors = createMirrors(model);
   cabin.group.add(mirrors.interior);
   carGroup.add(mirrors.exterior);
@@ -136,7 +146,10 @@ async function main() {
   if (params.has('wiper')) wipers.mode = params.get('wiper');
   traffic.reset(vehicle);
 
-  env.onThunder = (delay, strength) => audio.thunder(delay, strength);
+  env.onThunder = (delay, strength) => {
+    audio.thunder(delay, strength);
+    setTimeout(() => hud.react('thunder'), delay * 1000);
+  };
   wipers.onEvent = (type, dur) => audio.wiper(type, dur);
   traffic.onPass = (ttc, rel, du, heavy) => audio.pass(ttc, rel, du, heavy);
   driverWin.onStop = (open) => audio.windowStop(!open);
@@ -226,6 +239,7 @@ async function main() {
     'V         主驾车窗 开/关',
     'Q         画质：低 / 中 / 高 / 极高',
     'K         来一道闪电',
+    'J         HUD 虚拟人物 显示/隐藏（角色：LivLiv（livliv.ai））',
     'PgUp/PgDn 座椅升 / 降',
     'P         音乐播放 / 暂停（开局 N 秒后自动播放内置曲目）',
     'N / [ ]   下一首 / 音乐音量，O 或拖进窗口添加更多',
@@ -290,6 +304,16 @@ async function main() {
       case 'KeyV':
         toast(driverWin.toggle() ? '主驾车窗：打开' : '主驾车窗：关闭');
         break;
+      case 'KeyJ': {
+        const on = hud.toggle();
+        try {
+          localStorage.setItem('rd.hud', on ? '1' : '0');
+        } catch {
+          /* 同上 */
+        }
+        toast(on ? 'HUD 虚拟人物：显示 · 角色：LivLiv（livliv.ai）' : 'HUD 虚拟人物：隐藏');
+        break;
+      }
       case 'KeyQ':
         setQuality(QUALITY_KEYS[(QUALITY_KEYS.indexOf(qualityKey) + 1) % QUALITY_KEYS.length]);
         toast(`画质：${quality.name}`);
@@ -331,6 +355,8 @@ async function main() {
           const before = vehicle.targetLane;
           if (!vehicle.changeLane(dir, traffic) && before + dir >= 0 && before + dir < ROAD.LANES) {
             toast(dir < 0 ? '左侧有车，暂不变道' : '右侧有车，暂不变道');
+          } else if (vehicle.targetLane !== before) {
+            hud.react('lane');
           }
         }
         break;
@@ -499,6 +525,8 @@ async function main() {
       l.shadow.needsUpdate = l.intensity > 0.04;
     });
     for (const sc of cabin.screens) sc.material.color.setScalar(env.cur.screens * sc.gain);
+    // HUD 和仪表屏一样跟着昼夜调亮度：白天要亮很多才压得住外景；角色的视线跟着鼠标
+    hud.update(dt, 0.55 * env.cur.screens, input.look, camera, cabin.group.matrixWorld);
 
     // ---- 方向盘（约 14:1 的转向比）
     cabin.wheel.rotation.z = vehicle.steer * 14;
@@ -625,7 +653,7 @@ async function main() {
   }
   requestAnimationFrame(frame);
 
-  Object.assign(debug, { renderer, world, cabinScene, camera, vehicle, traffic, env, wipers, pipeline, audio, G, simulate, render, setQuality, dropSims, driverWin });
+  Object.assign(debug, { renderer, world, cabinScene, camera, vehicle, traffic, env, wipers, pipeline, audio, G, simulate, render, setQuality, dropSims, driverWin, hud });
 }
 
 main().catch((e) => {
