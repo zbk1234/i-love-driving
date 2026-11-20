@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { ROAD } from '../config.js';
 import { shared } from '../core/globals.js';
-import { COMMON, LIGHTING } from '../shaders/common.js';
+import { COMMON, LIGHTING, glf } from '../shaders/common.js';
 
 // 湿路面。几何体只是一条跟着车走的长带子，所有细节都在片元着色器里按世界坐标算出来：
 // 标线、车辙积水、伸缩缝、雨点涟漪，以及最关键的——平面倒影。
@@ -40,7 +40,7 @@ export function createRoad(placer) {
       varying vec3 vWp;
       void main() {
         float wz = position.z + uBaseZ;
-        vec3 wp = vec3(roadX(wz) + position.x, 0.0, wz);
+        vec3 wp = vec3(roadX(wz) + position.x * uRoadSize.w / ${glf(ROAD.HALF_W)}, 0.0, wz);
         vWp = wp;
         gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
       }
@@ -104,7 +104,12 @@ export function createRoad(placer) {
         float dash = smoothstep(0.0, az, fz) * (1.0 - smoothstep(0.4, 0.4 + az, fz));
         dash = mix(dash, 0.4, smoothstep(0.15, 0.5, az));
         float lanes = (lineMask(au - (EDGE_IN + LANE_W), 0.15, aaU) + lineMask(au - (EDGE_IN + 2.0 * LANE_W), 0.15, aaU)) * dash;
-        float mark = clamp(edge + lanes, 0.0, 1.0);
+        float center = uAnji * lineMask(u, 0.15, aaU);
+        if (uAnji > 0.5) {
+          edge = lineMask(au - EDGE_OUT, 0.15, aaU);
+          lanes = 0.0;
+        }
+        float mark = clamp(edge + lanes + center, 0.0, 1.0);
         mark *= 0.35 + 0.65 * smoothstep(0.2, 0.45, n1.a * 0.5 + n2.a * 0.5);
 
         if (uDesert > 0.5) {
@@ -127,18 +132,18 @@ export function createRoad(placer) {
         float rd = min(abs(lf - 1.0), abs(lf - 2.75));
         float inLanes = step(0.0, lu) * step(au, EDGE_OUT);
         float rut = (1.0 - smoothstep(0.12, 0.5, rd)) * inLanes;
-        float gutter = smoothstep(13.0, 14.6, au) + smoothstep(0.85, 0.45, au);
+        float gutter = uAnji > 0.5 ? smoothstep(EDGE_OUT, uRoadSize.w, au) : smoothstep(13.0, 14.6, au) + smoothstep(0.85, 0.45, au);
         float pn = n3.b * 0.55 + n2.b * 0.3 + n2.a * 0.15;
         float puddle = smoothstep(0.50, 0.58, pn + rut * 0.07 + gutter * 0.25 + (uRain - 0.6) * 0.12);
 
         // ---- 高架伸缩缝
         float jd = abs(fract(P.z / JOINT_S + 0.5) - 0.5) * JOINT_S;
-        float joint = (1.0 - smoothstep(0.05, 0.05 + aaZ, jd)) * min(1.0, 0.12 / aaZ);
+        float joint = (1.0 - uAnji) * (1.0 - smoothstep(0.05, 0.05 + aaZ, jd)) * min(1.0, 0.12 / aaZ);
 
         // ---- 颜色（湿沥青很黑）
-        vec3 asphalt = vec3(0.040, 0.042, 0.046) * (0.65 + 0.7 * n1.a) * (0.8 + 0.4 * n2.a);
+        vec3 asphalt = mix(vec3(0.040, 0.042, 0.046), vec3(0.075, 0.080, 0.076), uAnji) * (0.65 + 0.7 * n1.a) * (0.8 + 0.4 * n2.a);
         asphalt *= 1.0 - 0.3 * smoothstep(0.55, 0.6, n3.a);
-        vec3 paint = vec3(0.50, 0.50, 0.47) * (0.55 + 0.45 * n1.a);
+        vec3 paint = mix(vec3(0.50, 0.50, 0.47), vec3(0.85, 0.56, 0.08), center) * (0.55 + 0.45 * n1.a);
         vec3 albedo = mix(asphalt, paint, mark);
         albedo = mix(albedo, vec3(0.06, 0.062, 0.066), joint);
         albedo *= 1.0 - 0.5 * puddle;

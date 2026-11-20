@@ -2,13 +2,11 @@ import { ROAD } from '../config.js';
 
 export const glf = (n) => Number(n).toFixed(6);
 
-const [c1, c2] = ROAD.CURVE;
-
 // 所有外景着色器共用：常量、共享 uniform、哈希、道路中心线
 export const COMMON = /* glsl */ `
-#define LANE_W ${glf(ROAD.LANE_W)}
-#define EDGE_IN ${glf(ROAD.EDGE_IN)}
-#define EDGE_OUT ${glf(ROAD.EDGE_OUT)}
+#define LANE_W uRoadSize.x
+#define EDGE_IN uRoadSize.y
+#define EDGE_OUT uRoadSize.z
 #define LAMP_S ${glf(ROAD.LAMP_S)}
 #define LAMP_H ${glf(ROAD.LAMP_H)}
 #define LAMP_U ${glf(ROAD.LAMP_U)}
@@ -16,6 +14,9 @@ export const COMMON = /* glsl */ `
 
 uniform float uTime;
 uniform vec4 uRoadPh;
+uniform vec4 uRoadCurve;
+uniform vec4 uRoadSize;
+uniform float uAnji;
 uniform float uOriginZ;
 uniform vec3 uFogColor;
 uniform float uFogDensity;
@@ -45,10 +46,10 @@ vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)
 
 // 道路中心线，与 core/roadmath.js 保持一致
 float roadX(float z) {
-  return ${glf(c1[0])} * sin(z * ${glf(c1[1])} + uRoadPh.x) + ${glf(c2[0])} * sin(z * ${glf(c2[1])} + uRoadPh.y);
+  return uRoadCurve.x * sin(z * uRoadCurve.y + uRoadPh.x) + uRoadCurve.z * sin(z * uRoadCurve.w + uRoadPh.y);
 }
 float roadDX(float z) {
-  return ${glf(c1[0] * c1[1])} * cos(z * ${glf(c1[1])} + uRoadPh.x) + ${glf(c2[0] * c2[1])} * cos(z * ${glf(c2[1])} + uRoadPh.y);
+  return uRoadCurve.x * uRoadCurve.y * cos(z * uRoadCurve.y + uRoadPh.x) + uRoadCurve.z * uRoadCurve.w * cos(z * uRoadCurve.w + uRoadPh.y);
 }
 `;
 

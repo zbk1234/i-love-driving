@@ -7,15 +7,42 @@
     <link rel="stylesheet" href="/src/ui/style.css" />
   </head>
   <body>
-    <canvas id="view"></canvas>
+    <canvas id="view" tabindex="-1"></canvas>
 
-    <!-- 开始遮罩：点击后解锁音频并开始 -->
     <div id="intro">
       <div class="intro-inner">
         <p class="eyebrow">RAIN DRIVE · 沉浸式驾驶</p>
         <h1>雨中行车</h1>
-        <p class="lede">雨夜城市，或美国沙漠日落。驾驶中按 B 切换，戴上耳机效果更好。</p>
-        <button id="start" type="button">开始驾驶</button>
+        <p class="lede">选一段风景，慢慢开。选择场景后，点击开始驾驶。</p>
+        <fieldset id="scenes">
+          <legend>选择场景</legend>
+          <label class="scene-option">
+            <input type="radio" name="scene" value="city" checked />
+            <span class="scene-card">
+              <span class="scene-place">01 · 城市</span>
+              <strong>雨夜高架</strong>
+              <span class="scene-detail">灯影与雨声 · 多车道巡航</span>
+            </span>
+          </label>
+          <label class="scene-option">
+            <input type="radio" name="scene" value="desert" />
+            <span class="scene-card">
+              <span class="scene-place">02 · 美国</span>
+              <strong>沙漠日落</strong>
+              <span class="scene-detail">落日与旷野 · 晴朗公路</span>
+            </span>
+          </label>
+          <label class="scene-option">
+            <input type="radio" name="scene" value="anji" />
+            <span class="scene-card">
+              <span class="scene-place">03 · 中国安吉</span>
+              <strong>竹海山路</strong>
+              <span class="scene-detail">临崖竹海 · 小雨双向两车道</span>
+            </span>
+          </label>
+        </fieldset>
+        <button id="start" type="button" aria-live="polite">开始驾驶</button>
+        <p class="start-note">点击后加载场景 · 驾驶中按 B 切换 · 建议佩戴耳机</p>
         <div id="quality" role="group" aria-label="画质">
           <span>画质</span>
           <button type="button" data-q="low">低</button>
@@ -28,9 +55,9 @@
           <div><dt>A / D</dt><dd>转向（巡航时变道）</dd></div>
           <div><dt>F</dt><dd>自动巡航 开 / 关</dd></div>
           <div><dt>E</dt><dd>雨刮档位</dd></div>
-          <div><dt>R</dt><dd>城市雨量（沙漠保持晴朗）</dd></div>
-          <div><dt>T</dt><dd>城市时间：傍晚 / 夜晚 / 白天</dd></div>
-          <div><dt>B</dt><dd>场景：雨夜城市 / 美国沙漠日落</dd></div>
+          <div><dt>R</dt><dd>城市雨量（安吉小雨，沙漠晴朗）</dd></div>
+          <div><dt>T</dt><dd>城市时间（安吉多云到阴天）</dd></div>
+          <div><dt>B</dt><dd>场景：雨夜城市 / 沙漠日落 / 安吉竹海</dd></div>
           <div><dt>L</dt><dd>远光灯</dd></div>
           <div><dt>V</dt><dd>主驾车窗 开 / 关</dd></div>
           <div><dt>J</dt><dd>HUD 虚拟人物 显示 / 隐藏</dd></div>

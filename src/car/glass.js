@@ -103,6 +103,67 @@ export function createGlassGeometries(source) {
   return out;
 }
 
+export function applyGlassCaustics(material, uniforms) {
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', `
+      #include <common>
+      uniform mat4 uCabinInverse;
+      varying vec3 vCausticPosition;
+    `).replace('#include <project_vertex>', `
+      #include <project_vertex>
+      vCausticPosition = (uCabinInverse * modelMatrix * vec4(transformed, 1.0)).xyz;
+    `);
+    shader.fragmentShader = shader.fragmentShader.replace('#include <common>', /* glsl */ `
+      #include <common>
+      uniform float uDesert;
+      uniform vec3 uCausticLocal;
+      uniform vec3 uCausticDir;
+      varying vec3 vCausticPosition;
+
+      float glassCaustic() {
+        if (uDesert < 0.5 || uCausticLocal.z > -0.1) return 0.0;
+        vec3 p = vCausticPosition;
+        vec3 n = vec3(0.0, -${GLASS.DZ.toFixed(4)}, ${GLASS.DY.toFixed(4)});
+        vec3 base = vec3(0.0, ${GLASS.Y0.toFixed(4)}, ${GLASS.Z0.toFixed(4)});
+        float incidence = dot(uCausticLocal, n);
+        if (incidence > -0.08) return 0.0;
+        float ray = dot(base - p, n) / incidence;
+        for (int j = 0; j < 2; j++) {
+          vec3 hit = p + uCausticLocal * ray;
+          float sweep = ${GLASS.SWEEP.toFixed(4)} * pow(hit.x / ${GLASS.W0.toFixed(4)}, 2.0);
+          float curve = dot(hit - base, n) - ${GLASS.DY.toFixed(4)} * sweep;
+          float slope = dot(uCausticLocal, n) - ${GLASS.DY.toFixed(4)} * 2.0 * ${GLASS.SWEEP.toFixed(4)} * hit.x * uCausticLocal.x / ${(GLASS.W0 ** 2).toFixed(4)};
+          ray -= curve / slope;
+        }
+        if (ray <= 0.0 || ray > 3.0) return 0.0;
+        vec3 hit = p + uCausticLocal * ray;
+        float t = (hit.y - ${GLASS.Y0.toFixed(4)}) / ${GLASS.DY.toFixed(4)};
+        float width = mix(${GLASS.W0.toFixed(4)}, ${GLASS.W1.toFixed(4)}, clamp(t, 0.0, 1.0));
+        vec2 uv = vec2(hit.x / width, t);
+        float aperture = smoothstep(0.0, 0.025, t) * (1.0 - smoothstep(0.96, 1.0, t));
+        aperture *= 1.0 - smoothstep(0.93, 1.0, abs(uv.x));
+        float bend = uv.y + 0.12 * uv.x * uv.x;
+        float phase = bend * 23.0 + 1.1 * sin(uv.x * 4.5) + 0.35 * sin(uv.x * 11.0);
+        float footprint = max(fwidth(phase), 0.015);
+        float fold = abs(sin(phase));
+        float ribbon = 1.0 - smoothstep(0.035, 0.14 + footprint, fold);
+        float edge = exp(-pow((bend - 0.075) / (0.018 + fwidth(bend)), 2.0));
+        float focus = (ribbon * 5.5 + edge * 3.2) * (1.0 - smoothstep(0.35, 1.2, footprint));
+        return focus * aperture;
+      }
+    `);
+    // 折射聚光使用独立的窗框阴影，不能沿用贴地夕光的遮挡。
+    const lights = THREE.ShaderChunk.lights_fragment_begin.replace(
+      'getDirectionalLightInfo( directionalLight, directLight );',
+      `getDirectionalLightInfo( directionalLight, directLight );
+       if (uDesert > 0.5 && dot(directLight.direction, normalize(mat3(viewMatrix) * uCausticDir)) > 0.999) directLight.color *= glassCaustic();`,
+    );
+    shader.fragmentShader = shader.fragmentShader.replace('#include <lights_fragment_begin>', lights);
+  };
+  material.customProgramCacheKey = () => 'glass-caustics';
+}
+
 const FRAG = /* glsl */ `
 #define SEAL_N ${SEAL_N}
 #define SEAL_H ${WINDOW.TRAVEL.toFixed(4)}
@@ -114,6 +175,8 @@ uniform vec2 uRes;
 uniform float uTime;
 uniform float uRain;
 uniform float uDesert;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
 uniform vec4 uSlideA;     // 滑动水珠层 A：方向.xy、累计相位、权重
 uniform vec4 uSlideB;
 uniform vec2 uSlideSign;  // 两层当前的运动方向（决定水痕拖在哪一侧）
@@ -141,6 +204,7 @@ uniform vec4 uHudRect;     // HUD 占的玻璃坐标范围：x0, y0, 1/宽, 1/�
 uniform float uHud;        // HUD 亮度（0 = 关）
 varying vec2 vG;
 varying float vWin;
+varying vec3 vGlassWorld;
 
 float hash11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
 float hash21(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
@@ -347,7 +411,17 @@ void main() {
 
   vec3 col;
   if (uDesert > 0.5) {
-    col = texture2D(tScene, suv).rgb;
+    vec2 grain = texture2D(tNoise, g * 3.5).rg - 0.5;
+    vec2 refracted = clamp(suv + grain * 0.00045, vec2(0.001), vec2(0.999));
+    col = texture2D(tScene, refracted).rgb;
+    vec3 ray = normalize(vGlassWorld - cameraPosition);
+    float sunDist = length(ray - uSunDir);
+    float glow = exp(-sunDist * sunDist / 0.018);
+    float curve = g.y + 0.06 * g.x * g.x;
+    float glint = exp(-pow((curve - 0.13) / 0.014, 2.0));
+    col += uSunColor * glow * (0.055 + glint * 0.32);
+    vec3 ghost = texture2D(tScene, clamp(refracted + vec2(0.0012, 0.002), vec2(0.001), vec2(0.999))).rgb;
+    col += max(ghost - vec3(1.0), vec3(0.0)) * 0.025;
   } else {
   float since = sealS;
   vec3 bead = vec3(0.0);
@@ -505,6 +579,8 @@ export function createGlassMaterial({ wipers = false, tint = [0.86, 0.9, 0.88], 
       uTime: G.uTime,
       uRain: G.uRain,
       uDesert: G.uDesert,
+      uSunDir: G.uSunDir,
+      uSunColor: G.uSunColor,
       uSlideA: { value: new THREE.Vector4(0, -1, 0, 1) },
       uSlideB: { value: new THREE.Vector4(1, 0, 0, 0) },
       uSlideSign: { value: new THREE.Vector2(1, 1) },
@@ -537,10 +613,12 @@ export function createGlassMaterial({ wipers = false, tint = [0.86, 0.9, 0.88], 
       uniform vec4 uWin;
       varying vec2 vG;
       varying float vWin;
+      varying vec3 vGlassWorld;
       void main() {
         vG = aG;
         vWin = aWin;
         vec3 p = position + uWin.xyz * (uWin.w * aWin);
+        vGlassWorld = (modelMatrix * vec4(p, 1.0)).xyz;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
       }
     `,

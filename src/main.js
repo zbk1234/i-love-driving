@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ROAD, CAR, QUALITY, QUALITY_KEYS, MAX_DROPS } from './config.js';
+import { ROAD, CAR, QUALITY, QUALITY_KEYS, MAX_DROPS, setRoadScene } from './config.js';
 import { G } from './core/globals.js';
 import { roadState, setOrigin, roadX } from './core/roadmath.js';
 import { makeNoiseTexture } from './core/noise.js';
@@ -12,6 +12,7 @@ import { Placer } from './world/materials.js';
 import { createRoad } from './world/road.js';
 import { createProps } from './world/props.js';
 import { createDesert } from './world/desert.js';
+import { createAnji } from './world/anji.js';
 import { createSky } from './world/sky.js';
 import { Traffic } from './world/traffic.js';
 import { createRain } from './world/rain.js';
@@ -42,11 +43,11 @@ function fatal(msg) {
   $('intro').classList.add('gone');
 }
 
-// 调试用的地址栏参数：?autostart&warp=20&t=night&rain=3&q=high&look=-30,5&manual&nosample
+// 调试用的地址栏参数：?scene=anji&warp=20&t=night&rain=3&q=high&look=-30,5&manual&nosample
 // 画质平时用预设（开始页 / Q 键）；?scale= ?ws= ?msaa= ?drops= 可以单独覆盖预设里的某一项
 const params = new URLSearchParams(location.search);
 
-async function main() {
+async function main(selectedScene, initialQuality) {
   const canvas = $('view');
   let renderer;
   try {
@@ -55,14 +56,12 @@ async function main() {
     fatal('无法创建 WebGL2 上下文。\n请使用较新的 Chrome / Edge，并确认已开启硬件加速。');
     return;
   }
-  // 车模读完之前不能开始
-  const startBtn = $('start');
-  const startLabel = startBtn.textContent;
-  startBtn.disabled = true;
-  startBtn.textContent = '正在加载车模…';
+  const audio = new AudioEngine({ samples: !params.has('nosample') });
+  // 点击时解锁音频，加载期间暂停，避免慢速网络下丢失用户手势。
+  audio.start();
+  await audio.ctx?.suspend();
   const model = await loadCarModel();
-  startBtn.disabled = false;
-  startBtn.textContent = startLabel;
+  $('start').textContent = '正在准备场景…';
 
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -72,6 +71,8 @@ async function main() {
   const syncRoad = () => {
     G.uRoadPh.value.set(roadState.ph[0], roadState.ph[1], 0, 0);
     G.uOriginZ.value = roadState.originZ;
+    G.uRoadCurve.value.set(ROAD.CURVE[0][0], ROAD.CURVE[0][1], ROAD.CURVE[1][0], ROAD.CURVE[1][1]);
+    G.uRoadSize.value.set(ROAD.LANE_W, ROAD.EDGE_IN, ROAD.EDGE_OUT, ROAD.HALF_W);
   };
   setOrigin(0);
   syncRoad();
@@ -85,6 +86,7 @@ async function main() {
   const cityProps = createProps(renderer, placer);
   world.add(cityProps);
   let desert = null;
+  let anji = null;
   world.add(createSky());
   const traffic = new Traffic();
   world.add(traffic.group);
@@ -143,29 +145,41 @@ async function main() {
   if (params.has('prof')) pipeline.prof = {};
   const vehicle = new Vehicle();
   const env = new Environment(params.get('t') || 'dusk', params.has('rain') ? clamp(Number(params.get('rain')), 0, 3) : 2);
-  const audio = new AudioEngine({ samples: !params.has('nosample') });
   const input = new Input();
   if (params.has('manual')) vehicle.setAuto(false);
   if (params.has('wiper')) wipers.mode = params.get('wiper');
   traffic.reset(vehicle);
-  let cityWiperMode = wipers.mode;
+  const sceneKeys = ['city', 'desert', 'anji'];
+  const sceneWipers = { city: wipers.mode, desert: 'off', anji: 'auto' };
   function setDrivingScene(scene) {
+    if (!sceneKeys.includes(scene)) return env.sceneName;
     const isDesert = scene === 'desert';
+    const isAnji = scene === 'anji';
+    const roadChanged = isAnji !== env.isAnji;
+    sceneWipers[env.scene] = wipers.mode;
+    setRoadScene(scene);
+    setOrigin(roadState.originZ);
+    syncRoad();
+    if (roadChanged) vehicle.resetRoad();
     if (isDesert && !desert) {
       desert = createDesert(placer);
       world.add(desert.group);
     }
-    if (isDesert && !env.isDesert) cityWiperMode = wipers.mode;
+    if (isAnji && !anji) {
+      anji = createAnji(placer);
+      world.add(anji.group);
+    }
     env.setScene(scene);
-    cityProps.visible = !isDesert;
+    cityProps.visible = scene === 'city';
     if (desert) desert.group.visible = isDesert;
+    if (anji) anji.group.visible = isAnji;
     rain.mesh.visible = !isDesert;
-    wipers.mode = isDesert ? 'off' : cityWiperMode;
+    wipers.mode = isDesert ? 'off' : sceneWipers[scene];
     traffic.setScene(scene, vehicle);
     placer.update(vehicle.z);
     return env.sceneName;
   }
-  if (params.get('scene') === 'desert') setDrivingScene('desert');
+  setDrivingScene(selectedScene);
 
   env.onThunder = (delay, strength) => {
     audio.thunder(delay, strength);
@@ -228,16 +242,7 @@ async function main() {
     }
     resize();
   }
-  for (const b of qualityButtons) b.addEventListener('click', () => setQuality(b.dataset.q));
-  {
-    let saved = null;
-    try {
-      saved = localStorage.getItem('rd.quality');
-    } catch {
-      /* 同上 */
-    }
-    setQuality(params.get('q') || saved || 'mid', false);
-  }
+  setQuality(initialQuality, false);
 
   // ------------------------------------------------------------------ 提示文字
   const toastEl = $('toast');
@@ -254,9 +259,9 @@ async function main() {
     'A / D     转向（巡航时变道）',
     'F         自动巡航 开/关',
     'E         雨刮档位',
-    'R         雨量（城市；沙漠保持晴朗）',
-    'T         傍晚 / 夜晚 / 白天（城市）',
-    'B         场景：雨夜城市 / 美国沙漠日落',
+    'R         城市雨量（安吉小雨；沙漠晴朗）',
+    'T         城市时间（安吉多云到阴天）',
+    'B         场景：雨夜城市 / 沙漠日落 / 安吉竹海',
     'L         远光灯',
     'V         主驾车窗 开/关',
     'Q         画质：低 / 中 / 高 / 极高',
@@ -298,17 +303,14 @@ async function main() {
   };
 
   input.onPress = (code) => {
-    if (!started) {
-      if (code === 'Enter' || code === 'Space') start();
-      return;
-    }
+    if (!started) return;
     switch (code) {
       case 'KeyF':
         vehicle.setAuto(!vehicle.auto);
         toast(vehicle.auto ? `自动巡航：开 · ${Math.round(vehicle.cruise * 3.6)} km/h` : '自动巡航：关 · 手动驾驶');
         break;
       case 'KeyB':
-        toast(`场景：${setDrivingScene(env.isDesert ? 'city' : 'desert')} · B 切换`, 3600);
+        toast(`场景：${setDrivingScene(sceneKeys[(sceneKeys.indexOf(env.scene) + 1) % sceneKeys.length])} · B 切换`, 3600);
         break;
       case 'KeyE':
         toast(`雨刮：${WIPER_LABELS[wipers.cycleMode()]}`);
@@ -393,18 +395,15 @@ async function main() {
     if (started) return;
     started = true;
     $('intro').classList.add('gone');
-    audio.start();
+    $('intro').inert = true;
+    $('intro').setAttribute('aria-busy', 'false');
+    audio.ctx?.resume();
     canvas.focus();
     setTimeout(() => toast('自动巡航中 · B 切换场景 · A/D 变道 · F 接管 · H 帮助', 3600), 1400);
     // 开车 2 秒后自动放第一首；列表为空或这期间已经按过 P 就不动
     setTimeout(() => {
       if (stereo.index < 0 && stereo.tracks.length) stereo.play(0);
     }, 3000);
-  }
-  $('start').addEventListener('click', start);
-  if (params.has('autostart')) {
-    started = true;
-    $('intro').classList.add('gone');
   }
 
   // ------------------------------------------------------------------ 每帧状态
@@ -453,7 +452,7 @@ async function main() {
 
     // ---- 伸缩缝：前轴压过时车身一抖
     const jointIdx = Math.floor((vehicle.z + roadState.originZ - CAR.WHEELBASE / 2) / ROAD.JOINT_S);
-    if (!env.isDesert && lastJoint !== null && jointIdx !== lastJoint && vehicle.speed > 3) {
+    if (env.scene === 'city' && lastJoint !== null && jointIdx !== lastJoint && vehicle.speed > 3) {
       const k = clamp(vehicle.speed / 25, 0.3, 1);
       bounceV += 0.045 * k;
       audio.joint(CAR.WHEELBASE / vehicle.speed, k);
@@ -478,6 +477,9 @@ async function main() {
     carGroup.quaternion.copy(carQuat);
     cabin.group.position.copy(carPos);
     cabin.group.quaternion.copy(carQuat);
+    cabin.caustics.uCabinInverse.value.copy(carMatrix).invert();
+    cabin.caustics.uCausticDir.value.copy(G.uSunDir.value).add(tmpV.set(0, 0.28, 0)).normalize();
+    cabin.caustics.uCausticLocal.value.copy(cabin.caustics.uCausticDir.value).applyQuaternion(tmpQ.copy(carQuat).invert());
     carFwd.set(0, 0, -1).applyQuaternion(carQuat);
     carVel.copy(carFwd).multiplyScalar(vehicle.speed);
 
@@ -541,10 +543,10 @@ async function main() {
     lampLights.forEach((l, i) => {
       if (env.isDesert) {
         l.color.copy(G.uSunColor.value);
-        l.intensity = i === 0 ? Math.PI * 0.85 : 0;
+        l.intensity = Math.PI * (i === 0 ? 0.85 : 1.15);
         l.target.position.set(carPos.x, carPos.y + 1.1, carPos.z);
-        l.position.copy(l.target.position).addScaledVector(G.uSunDir.value, 8);
-        l.shadow.needsUpdate = i === 0;
+        l.position.copy(l.target.position).addScaledVector(i === 0 ? G.uSunDir.value : cabin.caustics.uCausticDir.value, 8);
+        l.shadow.needsUpdate = true;
         return;
       }
       const lz = ks[i] * S;
@@ -695,12 +697,48 @@ async function main() {
     }
     requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
 
-  Object.assign(debug, { renderer, world, cabinScene, camera, vehicle, traffic, env, wipers, pipeline, audio, G, simulate, render, setQuality, dropSims, driverWin, hud });
+  Object.assign(debug, { renderer, world, cabinScene, camera, vehicle, traffic, env, wipers, pipeline, audio, G, simulate, render, setQuality, dropSims, driverWin, hud, setDrivingScene });
+  simulate(0);
+  render();
+  start();
+  last = performance.now();
+  requestAnimationFrame(frame);
 }
 
-main().catch((e) => {
-  console.error(e);
-  fatal(`启动失败：${e.message}`);
+const sceneInputs = [...document.querySelectorAll('input[name="scene"]')];
+const requestedScene = sceneInputs.find((input) => input.value === params.get('scene'));
+if (requestedScene) requestedScene.checked = true;
+
+let selectedQuality = 'mid';
+try {
+  selectedQuality = localStorage.getItem('rd.quality') || selectedQuality;
+} catch {}
+selectedQuality = params.get('q') || selectedQuality;
+if (!QUALITY[selectedQuality]) selectedQuality = 'mid';
+const qualityButtons = [...document.querySelectorAll('#quality [data-q]')];
+for (const button of qualityButtons) {
+  button.setAttribute('aria-pressed', String(button.dataset.q === selectedQuality));
+  button.addEventListener('click', () => {
+    selectedQuality = button.dataset.q;
+    for (const option of qualityButtons) option.setAttribute('aria-pressed', String(option === button));
+    try {
+      localStorage.setItem('rd.quality', selectedQuality);
+    } catch {}
+  });
+}
+
+$('start').addEventListener('click', async () => {
+  if ($('start').disabled) return;
+  const selectedScene = sceneInputs.find((input) => input.checked).value;
+  $('start').disabled = true;
+  $('start').textContent = '正在加载车模…';
+  $('intro').setAttribute('aria-busy', 'true');
+  for (const input of [...sceneInputs, ...qualityButtons]) input.disabled = true;
+  try {
+    await main(selectedScene, selectedQuality);
+  } catch (e) {
+    console.error(e);
+    fatal(`启动失败：${e.message}`);
+  }
 });

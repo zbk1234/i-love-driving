@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CAR, laneCenter } from '../config.js';
+import { CAR, ROAD, laneCenter } from '../config.js';
 import { G, shared } from '../core/globals.js';
 import { COMMON, LIGHTING } from '../shaders/common.js';
 import { roadX, roadYaw } from '../core/roadmath.js';
@@ -76,6 +76,8 @@ export class Traffic {
     this.cityOpp = this.opp;
     this.desertSame = ['suv', 'sedan', 'motorcycle', 'truck'].map((k, i) => make(k, 1, i));
     this.desertOpp = ['sedan', 'motorcycle', 'suv'].map((k, i) => make(k, -1, i));
+    this.anjiSame = this.citySame.filter((c) => ['sedan', 'suv', 'van'].includes(c.kind)).slice(0, 5);
+    this.anjiOpp = this.cityOpp.filter((c) => ['sedan', 'suv', 'van'].includes(c.kind)).slice(0, 5);
     this.scene = 'city';
 
     // ---- 车灯光斑（加色混合的公告板）
@@ -185,8 +187,8 @@ export class Traffic {
       c.mesh.visible = false;
     }
     this.scene = scene;
-    this.same = scene === 'desert' ? this.desertSame : this.citySame;
-    this.opp = scene === 'desert' ? this.desertOpp : this.cityOpp;
+    this.same = scene === 'desert' ? this.desertSame : scene === 'anji' ? this.anjiSame : this.citySame;
+    this.opp = scene === 'desert' ? this.desertOpp : scene === 'anji' ? this.anjiOpp : this.cityOpp;
     this.passby.gain = 0;
     this.passby.pan = 0;
     this.reset(player);
@@ -216,8 +218,8 @@ export class Traffic {
   }
 
   _spawnSame(c, player, forceDz) {
-    const lane = c.kind === 'motorcycle' ? 2 : c.heavy ? (Math.random() < 0.65 ? 2 : 1) : Math.floor(Math.random() * 3);
-    const vDes = ([27.5, 23.5, 19.5][lane] + rand(-2, 2)) * (c.heavy ? 0.93 : 1);
+    const lane = ROAD.LANES === 1 ? 0 : c.kind === 'motorcycle' ? ROAD.LANES - 1 : c.heavy ? (Math.random() < 0.65 ? ROAD.LANES - 1 : 1) : Math.floor(Math.random() * ROAD.LANES);
+    const vDes = ((this.scene === 'anji' ? 11.5 : [27.5, 23.5, 19.5][lane]) + rand(-2, 2)) * (c.heavy ? 0.93 : 1);
     const faster = vDes > player.speed + 1.5;
     const dz = forceDz ?? (faster ? rand(170, 255) : -rand(430, 660));
     const z = player.z + dz;
@@ -229,12 +231,12 @@ export class Traffic {
   }
 
   _spawnOpp(c, player, forceDz) {
-    const lane = c.heavy ? 2 : Math.floor(Math.random() * 3);
+    const lane = c.heavy ? ROAD.LANES - 1 : Math.floor(Math.random() * ROAD.LANES);
     const dz = forceDz ?? -rand(680, 980);
     const z = player.z + dz;
     const u = -laneCenter(lane);
     if (!this._laneClear(this.opp, c, u, z, 60)) return;
-    Object.assign(c, { u, targetU: u, z, v: [27, 24, 20][lane] + rand(-2, 2), active: true });
+    Object.assign(c, { u, targetU: u, z, v: (this.scene === 'anji' ? 11 : [27, 24, 20][lane]) + rand(-2, 2), active: true });
     c.mesh.visible = true;
   }
 
@@ -324,11 +326,11 @@ export class Traffic {
       if (!changing) {
         c.blink = 0;
         c.blocked = gap < 10 + c.v * 1.9 && c.v < c.vDes - 1.5 ? c.blocked + dt : 0;
-        if (c.blocked > 2.0 && c.cool < 0) {
-          const lane = Math.round((c.u - laneCenter(0)) / 3.75);
+        if (ROAD.LANES > 1 && c.blocked > 2.0 && c.cool < 0) {
+          const lane = Math.round((c.u - laneCenter(0)) / ROAD.LANE_W);
           for (const dl of [-1, 1]) {
             const nl = lane + dl;
-            if (nl < 0 || nl > 2 || (c.heavy && nl === 0)) continue;
+            if (nl < 0 || nl >= ROAD.LANES || (c.heavy && nl === 0)) continue;
             const nu = laneCenter(nl);
             let free = this._laneClear(same, c, nu, c.z - 8, 30);
             if (free && Math.abs(player.u - nu) < 2.4 && Math.abs(player.z - (c.z - 6)) < 26) free = false;

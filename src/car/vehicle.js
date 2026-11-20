@@ -16,17 +16,17 @@ const MASS = 2200;
 export class Vehicle {
   constructor() {
     this.z = 0;
-    this.targetLane = 1;
-    this.laneU = laneCenter(1);
+    this.targetLane = Math.min(1, ROAD.LANES - 1);
+    this.laneU = laneCenter(this.targetLane);
     this.x = roadX(0) + this.laneU;
     this.yaw = roadYaw(0);
-    this.speed = 80 / 3.6;
+    this.speed = ROAD.CRUISE_SPEED / 3.6;
     this.steer = 0; // 前轮转角（弧度），左转为正
     this.steerInput = 0;
     this.accel = 0; // 平滑后的纵向加速度（车身俯仰用）
     this.latAcc = 0; // 平滑后的横向加速度（车身侧倾用），左转为正
     this.auto = true;
-    this.cruise = 80 / 3.6;
+    this.cruise = ROAD.CRUISE_SPEED / 3.6;
     this.blinker = 0; // -1 左 / +1 右
     this.scrape = 0; // 蹭护栏
     this.bump = 0; // 追尾冲击
@@ -49,6 +49,20 @@ export class Vehicle {
     return this.energy / KWH_PER_KM;
   }
 
+  resetRoad() {
+    this.targetLane = Math.min(this.targetLane, ROAD.LANES - 1);
+    this.laneU = laneCenter(this.targetLane);
+    this.x = roadX(this.z) + this.laneU;
+    this.yaw = roadYaw(this.z);
+    this.steer = 0;
+    this.steerInput = 0;
+    this.latAcc = 0;
+    this.accel = 0;
+    this.blinker = 0;
+    this.cruise = ROAD.CRUISE_SPEED / 3.6;
+    this.speed = Math.min(this.speed, this.cruise);
+  }
+
   changeLane(dir, traffic) {
     const nl = clamp(this.targetLane + dir, 0, ROAD.LANES - 1);
     if (nl === this.targetLane) return false;
@@ -64,7 +78,7 @@ export class Vehicle {
       const lane = clamp(Math.round((this.u - laneCenter(0)) / ROAD.LANE_W), 0, ROAD.LANES - 1);
       this.targetLane = lane;
       this.laneU = this.u;
-      this.cruise = clamp(Math.round((this.speed * 3.6) / 5) * 5, 40, 120) / 3.6;
+      this.cruise = clamp(Math.round((this.speed * 3.6) / 5) * 5, 40, ROAD.MAX_CRUISE) / 3.6;
     } else {
       this.blinker = 0;
     }
@@ -80,7 +94,7 @@ export class Vehicle {
       if (input.throttle || input.brake) {
         this._adjust -= dt;
         if (this._adjust <= 0) {
-          this.cruise = clamp(this.cruise + ((input.throttle ? 5 : -5) / 3.6), 30 / 3.6, 120 / 3.6);
+          this.cruise = clamp(this.cruise + ((input.throttle ? 5 : -5) / 3.6), 30 / 3.6, ROAD.MAX_CRUISE / 3.6);
           this._adjust = 0.25;
           this.cruiseChanged = true;
         }
@@ -150,7 +164,7 @@ export class Vehicle {
 
     // ---- 护栏
     const u = this.u;
-    const uMin = 0.32 + CAR.WID / 2 + 0.06;
+    const uMin = ROAD.MEDIAN_U + CAR.WID / 2 + 0.06;
     const uMax = ROAD.BARRIER_U - CAR.WID / 2 - 0.06;
     this.scrape = 0;
     if (u < uMin || u > uMax) {

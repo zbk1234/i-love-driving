@@ -378,11 +378,11 @@ export class Cluster {
     const cars = (s.cars || []).filter((c) => c.active);
     const lane = this._lane;
     const blink = performance.now() % 740 < 370;
-    const uIn = 0.3; // 中央隔离护栏
+    const uIn = ROAD.MEDIAN_U;
 
     // ---- 路面、护栏
     this._ribbon(ctx, VIEW.NEAR, VIEW.FAR, (uIn + ROAD.BARRIER_U) / 2, (ROAD.BARRIER_U - uIn) / 2, 'rgba(118,142,178,0.2)');
-    this._wall(ctx, uIn, 0.85);
+    if (ROAD.LANES > 1) this._wall(ctx, uIn, 0.85);
     this._wall(ctx, ROAD.BARRIER_U, 0.85);
 
     // ---- 变道时目标车道铺一层淡蓝
@@ -611,7 +611,7 @@ export class Cluster {
     ctx.font = `500 18px ${FONT}`;
     ctx.fillText(NAV.NAME, x + 12, 77);
     for (let i = 0; i < ROAD.LANES; i++) {
-      laneArrow(ctx, MAP.X + MAP.W / 2 + (i - 1) * 40, 114, i === ROAD.LANES - 1 ? 1 : 0, i === this._lane ? C.ink : 'rgba(27,36,48,0.32)');
+      laneArrow(ctx, MAP.X + MAP.W / 2 + (i - (ROAD.LANES - 1) / 2) * 40, 114, ROAD.LANES > 1 && i === ROAD.LANES - 1 ? 1 : 0, i === this._lane ? C.ink : 'rgba(27,36,48,0.32)');
     }
 
     // ---- 小地图：路网往下滚，绿色是规划路线，白色箭头是自车

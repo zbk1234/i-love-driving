@@ -4,6 +4,8 @@ import * as THREE from 'three';
 export const G = {
   uTime: { value: 0 },
   uRoadPh: { value: new THREE.Vector4() },
+  uRoadCurve: { value: new THREE.Vector4(90, 0.002, 25, 0.0057) },
+  uRoadSize: { value: new THREE.Vector4(3.75, 1, 12.25, 15.3) },
   uOriginZ: { value: 0 },
 
   uFogColor: { value: new THREE.Color(0.16, 0.18, 0.215) },
@@ -13,7 +15,8 @@ export const G = {
   uGndAmb: { value: new THREE.Color(0.03, 0.03, 0.035) },
 
   uDesert: { value: 0 },
-  uSunDir: { value: new THREE.Vector3(-0.22, 0.105, -1).normalize() },
+  uAnji: { value: 0 },
+  uSunDir: { value: new THREE.Vector3(-0.22, 0.018, -1).normalize() },
   uSunColor: { value: new THREE.Color(0, 0, 0) },
   uLampColor: { value: new THREE.Color(1.0, 0.6, 0.28) },
   uWindowGlow: { value: 1 },

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CAR } from '../config.js';
-import { createGlassGeometries, createGlassMaterial } from './glass.js';
+import { G } from '../core/globals.js';
+import { createGlassGeometries, createGlassMaterial, applyGlassCaustics } from './glass.js';
 import { Cluster, CenterScreen } from './cluster.js';
 
 // 驾驶舱（左舵）：车身和内饰来自车模，这里负责换材质、接上会动的部分——
@@ -52,6 +53,12 @@ function bakeOcclusion(geometry) {
 
 export function createCabin(model) {
   const group = new THREE.Group();
+  const caustics = {
+    uDesert: G.uDesert,
+    uCausticLocal: { value: new THREE.Vector3() },
+    uCausticDir: { value: new THREE.Vector3() },
+    uCabinInverse: { value: new THREE.Matrix4() },
+  };
   for (const part of [...model.body, ...model.wheel]) bakeOcclusion(part.geometry);
 
   // ------------------------------------------------------------ 车身 + 内饰
@@ -64,6 +71,7 @@ export function createCabin(model) {
     const opts = { color: src.color, map: src.map, side: THREE.DoubleSide, vertexColors: true };
     const m = leather ? new THREE.MeshStandardMaterial({ ...opts, roughness: 0.6 }) : new THREE.MeshLambertMaterial(opts);
     m.name = src.name;
+    applyGlassCaustics(m, caustics);
     cache.set(src, m);
     return m;
   };
@@ -103,6 +111,7 @@ export function createCabin(model) {
     const m = model.can.material;
     m.vertexColors = true;
     m.metalness = 0.35;
+    applyGlassCaustics(m, caustics);
     const can = new THREE.Mesh(model.can.geometry, m);
     can.receiveShadow = true;
     group.add(can);
@@ -164,5 +173,5 @@ export function createCabin(model) {
   skyFill.target.position.set(0, 1.0, 0);
   group.add(skyFill, skyFill.target);
 
-  return { group, wheel, cluster, screen, screens, glass, winDown: glassGeo.left.userData.down, matBg, clusterGlow, skyFill };
+  return { group, wheel, cluster, screen, screens, glass, caustics, winDown: glassGeo.left.userData.down, matBg, clusterGlow, skyFill };
 }

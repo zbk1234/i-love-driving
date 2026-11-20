@@ -60,7 +60,7 @@ export class CarStereo {
   }
 
   // MediaElementSource 只能在 AudioContext 建好之后创建，且每个 <audio> 只能接一次；
-  // 还没有 AudioContext 时（比如 ?autostart 跳过了开始按钮）先直接出声，用元素自己的音量
+  // 没有 AudioContext 时直接使用音频元素的音量
   _connect() {
     const ctx = this.audio.ctx;
     if (this._src) return;

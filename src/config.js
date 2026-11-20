@@ -9,6 +9,9 @@ export const ROAD = {
   EDGE_OUT: 12.25, // 外侧边线 = EDGE_IN + LANES * LANE_W
   BARRIER_U: 15.0, // 外侧护栏内表面
   HALF_W: 15.3, // 桥面半宽
+  MEDIAN_U: 0.32,
+  CRUISE_SPEED: 80,
+  MAX_CRUISE: 120,
   // 道路中心线：x = Σ a·sin(k·z + p)，平缓的大半径弯道
   CURVE: [
     [90, 0.002, 0.6],
@@ -22,6 +25,24 @@ export const ROAD = {
   LAMP_U: 2.4, // 灯头相对中央隔离带的横向伸出
   JOINT_S: 30, // 高架伸缩缝间距
 };
+
+const HIGHWAY = { ...ROAD };
+const ANJI_ROAD = {
+  LANE_W: 3.5,
+  LANES: 1,
+  EDGE_IN: 0.15,
+  EDGE_OUT: 3.65,
+  BARRIER_U: 4.45,
+  HALF_W: 4.65,
+  MEDIAN_U: 0.15,
+  CRUISE_SPEED: 40,
+  MAX_CRUISE: 60,
+  CURVE: [[44, 0.010, 0.6], [15, 0.022, 2.1]],
+};
+
+export function setRoadScene(scene) {
+  Object.assign(ROAD, HIGHWAY, scene === 'anji' ? ANJI_ROAD : {});
+}
 
 export const laneCenter = (i) => ROAD.EDGE_IN + ROAD.LANE_W * (i + 0.5);
 
