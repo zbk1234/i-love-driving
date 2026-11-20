@@ -6,7 +6,7 @@ import { COMMON, LIGHTING } from '../shaders/common.js';
 // 湿路面。几何体只是一条跟着车走的长带子，所有细节都在片元着色器里按世界坐标算出来：
 // 标线、车辙积水、伸缩缝、雨点涟漪，以及最关键的——平面倒影。
 
-const LENGTH = 1400;
+const LENGTH = 3600;
 const STEP = 4;
 
 export function createRoad(placer) {
@@ -107,6 +107,20 @@ export function createRoad(placer) {
         float mark = clamp(edge + lanes, 0.0, 1.0);
         mark *= 0.35 + 0.65 * smoothstep(0.2, 0.45, n1.a * 0.5 + n2.a * 0.5);
 
+        if (uDesert > 0.5) {
+          vec3 asphalt = vec3(0.15, 0.14, 0.13) * (0.8 + 0.35 * n1.a) * (0.88 + 0.22 * n2.a);
+          float shoulder = smoothstep(EDGE_OUT + 0.25, EDGE_OUT + 2.8, au);
+          asphalt = mix(asphalt, vec3(0.48, 0.31, 0.18) * (0.72 + n2.b * 0.45), shoulder);
+          float center = lineMask(abs(u) - 0.16, 0.12, aaU);
+          float inner = lineMask(au - EDGE_IN, 0.15, aaU);
+          vec3 paint = mix(vec3(0.77, 0.72, 0.57), vec3(0.95, 0.59, 0.12), clamp(inner + center, 0.0, 1.0));
+          vec3 albedo = mix(asphalt, paint, clamp(mark + center, 0.0, 1.0));
+          vec3 N = normalize(vec3((n1.r - 0.5) * 0.12, 1.0, (n1.g - 0.5) * 0.12));
+          vec3 col = shadeSurface(albedo, N, V, P, 0.035, 12.0, mark * 0.08);
+          gl_FragColor = vec4(applyFog(col, P), 1.0);
+          return;
+        }
+
         // ---- 积水：车辙、路缘和低洼处水更多
         float lu = au - EDGE_IN;
         float lf = mod(lu, LANE_W);
@@ -178,7 +192,7 @@ export function createRoad(placer) {
   const mesh = new THREE.Mesh(geo, material);
   mesh.frustumCulled = false;
   mesh.layers.set(1); // 路面自己不进倒影通道
-  placer.add(material, STEP, 40);
+  placer.add(material, STEP, 150);
 
   return { mesh, material };
 }

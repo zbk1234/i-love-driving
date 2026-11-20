@@ -113,6 +113,7 @@ uniform sampler2D tNoise;
 uniform vec2 uRes;
 uniform float uTime;
 uniform float uRain;
+uniform float uDesert;
 uniform vec4 uSlideA;     // 滑动水珠层 A：方向.xy、累计相位、权重
 uniform vec4 uSlideB;
 uniform vec2 uSlideSign;  // 两层当前的运动方向（决定水痕拖在哪一侧）
@@ -344,6 +345,10 @@ void main() {
     sealS = sealSince(h);
   }
 
+  vec3 col;
+  if (uDesert > 0.5) {
+    col = texture2D(tScene, suv).rgb;
+  } else {
   float since = sealS;
   vec3 bead = vec3(0.0);
   vec2 smear = vec2(0.0);
@@ -450,7 +455,6 @@ void main() {
 
   vec2 uv2 = suv - off * vec2(uRes.y / uRes.x, 1.0);
   float b2 = clamp(blur * 2.0, 0.0, 2.0);
-  vec3 col;
   if (b2 < 0.02) col = texture2D(tScene, uv2).rgb;
   else if (b2 < 1.0) col = mix(texture2D(tScene, uv2).rgb, texture2D(tBlurA, uv2).rgb, b2);
   else col = mix(texture2D(tBlurA, uv2).rgb, texture2D(tBlurB, uv2).rgb, b2 - 1.0);
@@ -470,6 +474,7 @@ void main() {
     col += (uSkyAmb * (1.0 + uFlash * 10.0) + env * 0.5) * glint * 2.2;
   }
 
+  }
   col *= uTint;
 
   // ---- HUD：光从玻璃内表面反射进眼睛，不经过外面的水珠、也不被玻璃染色，叠在最上面。
@@ -499,6 +504,7 @@ export function createGlassMaterial({ wipers = false, tint = [0.86, 0.9, 0.88], 
       uRes: { value: new THREE.Vector2(1, 1) },
       uTime: G.uTime,
       uRain: G.uRain,
+      uDesert: G.uDesert,
       uSlideA: { value: new THREE.Vector4(0, -1, 0, 1) },
       uSlideB: { value: new THREE.Vector4(1, 0, 0, 0) },
       uSlideSign: { value: new THREE.Vector2(1, 1) },

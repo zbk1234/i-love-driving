@@ -11,6 +11,7 @@ import { Input } from './core/input.js';
 import { Placer } from './world/materials.js';
 import { createRoad } from './world/road.js';
 import { createProps } from './world/props.js';
+import { createDesert } from './world/desert.js';
 import { createSky } from './world/sky.js';
 import { Traffic } from './world/traffic.js';
 import { createRain } from './world/rain.js';
@@ -81,7 +82,9 @@ async function main() {
   const placer = new Placer();
   const road = createRoad(placer);
   world.add(road.mesh);
-  world.add(createProps(renderer, placer));
+  const cityProps = createProps(renderer, placer);
+  world.add(cityProps);
+  let desert = null;
   world.add(createSky());
   const traffic = new Traffic();
   world.add(traffic.group);
@@ -145,6 +148,24 @@ async function main() {
   if (params.has('manual')) vehicle.setAuto(false);
   if (params.has('wiper')) wipers.mode = params.get('wiper');
   traffic.reset(vehicle);
+  let cityWiperMode = wipers.mode;
+  function setDrivingScene(scene) {
+    const isDesert = scene === 'desert';
+    if (isDesert && !desert) {
+      desert = createDesert(placer);
+      world.add(desert.group);
+    }
+    if (isDesert && !env.isDesert) cityWiperMode = wipers.mode;
+    env.setScene(scene);
+    cityProps.visible = !isDesert;
+    if (desert) desert.group.visible = isDesert;
+    rain.mesh.visible = !isDesert;
+    wipers.mode = isDesert ? 'off' : cityWiperMode;
+    traffic.setScene(scene, vehicle);
+    placer.update(vehicle.z);
+    return env.sceneName;
+  }
+  if (params.get('scene') === 'desert') setDrivingScene('desert');
 
   env.onThunder = (delay, strength) => {
     audio.thunder(delay, strength);
@@ -233,8 +254,9 @@ async function main() {
     'A / D     转向（巡航时变道）',
     'F         自动巡航 开/关',
     'E         雨刮档位',
-    'R         雨量',
-    'T         傍晚 / 夜晚 / 白天',
+    'R         雨量（城市；沙漠保持晴朗）',
+    'T         傍晚 / 夜晚 / 白天（城市）',
+    'B         场景：雨夜城市 / 美国沙漠日落',
     'L         远光灯',
     'V         主驾车窗 开/关',
     'Q         画质：低 / 中 / 高 / 极高',
@@ -284,6 +306,9 @@ async function main() {
       case 'KeyF':
         vehicle.setAuto(!vehicle.auto);
         toast(vehicle.auto ? `自动巡航：开 · ${Math.round(vehicle.cruise * 3.6)} km/h` : '自动巡航：关 · 手动驾驶');
+        break;
+      case 'KeyB':
+        toast(`场景：${setDrivingScene(env.isDesert ? 'city' : 'desert')} · B 切换`, 3600);
         break;
       case 'KeyE':
         toast(`雨刮：${WIPER_LABELS[wipers.cycleMode()]}`);
@@ -370,7 +395,7 @@ async function main() {
     $('intro').classList.add('gone');
     audio.start();
     canvas.focus();
-    setTimeout(() => toast('自动巡航中 · A/D 变道 · F 接管方向盘 · H 帮助'), 1400);
+    setTimeout(() => toast('自动巡航中 · B 切换场景 · A/D 变道 · F 接管 · H 帮助', 3600), 1400);
     // 开车 2 秒后自动放第一首；列表为空或这期间已经按过 P 就不动
     setTimeout(() => {
       if (stereo.index < 0 && stereo.tracks.length) stereo.play(0);
@@ -424,10 +449,11 @@ async function main() {
       syncRoad();
     }
     placer.update(vehicle.z);
+    if (env.isDesert) desert.update(dt, vehicle, time);
 
     // ---- 伸缩缝：前轴压过时车身一抖
     const jointIdx = Math.floor((vehicle.z + roadState.originZ - CAR.WHEELBASE / 2) / ROAD.JOINT_S);
-    if (lastJoint !== null && jointIdx !== lastJoint && vehicle.speed > 3) {
+    if (!env.isDesert && lastJoint !== null && jointIdx !== lastJoint && vehicle.speed > 3) {
       const k = clamp(vehicle.speed / 25, 0.3, 1);
       bounceV += 0.045 * k;
       audio.joint(CAR.WHEELBASE / vehicle.speed, k);
@@ -478,14 +504,14 @@ async function main() {
 
     // ---- 雨丝：带一点阵风
     wind.set(1.6 + Math.sin(time * 0.31) * 1.1, 0, 0.9 + Math.sin(time * 0.23 + 2.0) * 0.8);
-    rain.update(dt, carPos, carFwd, carVel, wind, clamp(env.rain * 1.1, 0.05, 1));
+    if (!env.isDesert) rain.update(dt, carPos, carFwd, carVel, wind, clamp(env.rain * 1.1, 0, 1));
 
     // ---- 雨刮与车窗水珠的流动
     wipers.update(time, env.rain);
     wipers.applyTo(cabin.glass.front);
     const v = vehicle.speed;
     driverWin.update(dt, time);
-    dropSims.update(dt, env.rain, v, wipers);
+    if (!env.isDesert) dropSims.update(dt, env.rain, v, wipers);
     cabin.glass.front.uniforms.uEdgeFlow.value = edgeFlow(v);
     // 前挡：低速时水珠往下淌，超过约 30km/h 被气流顶着往上爬
     const rateF = clamp(0.25 - v * 0.03, -0.9, 0.25);
@@ -513,6 +539,14 @@ async function main() {
     const S = ROAD.LAMP_S;
     const ks = [Math.ceil(vehicle.z / S), Math.floor(vehicle.z / S)];
     lampLights.forEach((l, i) => {
+      if (env.isDesert) {
+        l.color.copy(G.uSunColor.value);
+        l.intensity = i === 0 ? Math.PI * 0.85 : 0;
+        l.target.position.set(carPos.x, carPos.y + 1.1, carPos.z);
+        l.position.copy(l.target.position).addScaledVector(G.uSunDir.value, 8);
+        l.shadow.needsUpdate = i === 0;
+        return;
+      }
       const lz = ks[i] * S;
       tmpV.set(roadX(lz) + ROAD.LAMP_U - carPos.x, ROAD.LAMP_H - 1.1, lz - carPos.z);
       const d2 = tmpV.lengthSq();
@@ -575,7 +609,7 @@ async function main() {
       rain: env.rain,
       blinker: vehicle.blinker,
       blinkOn,
-      temp: 16,
+      temp: env.isDesert ? 31 : 16,
       // 仪表的车道感应、电量续航用
       z: vehicle.z,
       u: vehicle.u,
@@ -605,7 +639,7 @@ async function main() {
   }
 
   function render() {
-    dropSims.render();
+    if (!env.isDesert) dropSims.render();
     pipeline.render({
       world,
       cabin: cabinScene,

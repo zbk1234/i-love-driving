@@ -13,8 +13,8 @@ const OUTSIDE = new Set(['body', 'Light', 'glass', 'white']);
 const NO_SHADOW = new Set(['chrome_d', 'black_shiny', 'vd_glass']);
 // 座椅、后门、尾门：三角形很多（座椅就有 9 万多），影子只落在地板和后排，从驾驶位几乎看不到，也不投影
 const NO_SHADOW_NODE = /^(Seats|DoorRear|DoorBack)/;
-// 外后视镜的镜座和镜壳里的黑色件：在门玻璃外侧（|x| > 0.77），外景通道里已经有一份（会被镜壳正确挡住）。
-// 车内通道里这一份平时被玻璃盖住看不见，车窗一降就压在外景上面成了黑块，所以从车内通道里去掉
+// 只剔除外景通道已有的镜壳材质，不能误删同一区域的哑黑饰板和门板皮革。
+const MIRROR_MATERIALS = new Set(['black_shiny', 'chrome_d']);
 const outsideMirror = (x, y, z) => Math.abs(x) > 0.77 && y > 0.95 && y < 1.17 && z > -0.8 && z < -0.4;
 // 地板以下（底盘、保险杠下沿、排气、悬挂）：车里怎么转头都看不到
 const underFloor = (x, y) => y < 0.33;
@@ -75,7 +75,11 @@ export function createCabin(model) {
     return m;
   };
   const hidden = (x, y, z) => outsideMirror(x, y, z) || underFloor(x, y);
-  for (const part of model.body) if (!OUTSIDE.has(part.name)) addPart(part, group, false, dropTriangles(part.geometry, hidden));
+  for (const part of model.body) {
+    if (OUTSIDE.has(part.name)) continue;
+    const test = MIRROR_MATERIALS.has(part.name) ? hidden : underFloor;
+    addPart(part, group, false, dropTriangles(part.geometry, test));
+  }
 
   // ------------------------------------------------------------ 方向盘：绕转向柱的轴线转
   const wheelPivot = new THREE.Group();

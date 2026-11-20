@@ -1,8 +1,5 @@
 import { G } from './globals.js';
 
-// 天气与时间：三套光照预设（傍晚 / 夜晚 / 白天）、四档雨量、闪电。
-// 切换时所有数值平滑过渡，而不是硬切。
-
 export const TIMES = ['dusk', 'night', 'day'];
 export const RAINS = [
   { key: 'light', name: '小雨', v: 0.28 },
@@ -60,12 +57,29 @@ const PRESETS = {
   },
 };
 
+const DESERT = {
+  name: '沙漠日落',
+  skyTop: [0.19, 0.30, 0.48],
+  fog: [0.68, 0.37, 0.23],
+  skyAmb: [0.52, 0.43, 0.34],
+  gndAmb: [0.25, 0.14, 0.075],
+  lamp: 0,
+  window: 0,
+  head: 70,
+  exposure: 1.0,
+  bloom: 0.22,
+  cabin: 1.4,
+  fogK: 0.15,
+  screens: 1.85,
+};
+
 const LAMP_TINT = [1.0, 0.6, 0.28];
 const KEYS3 = ['skyTop', 'fog', 'skyAmb', 'gndAmb'];
 const KEYS1 = ['lamp', 'window', 'head', 'exposure', 'bloom', 'cabin', 'fogK', 'screens'];
 
 export class Environment {
   constructor(time = 'dusk', rain = 2) {
+    this.scene = 'city';
     this.time = time;
     this.rainIndex = rain;
     this.rain = RAINS[rain].v;
@@ -77,23 +91,41 @@ export class Environment {
     this.apply();
   }
 
+  get isDesert() {
+    return this.scene === 'desert';
+  }
+  get sceneName() {
+    return this.isDesert ? '美国沙漠 · 日落公路' : '雨夜城市 · 高架公路';
+  }
   get timeName() {
-    return PRESETS[this.time].name;
+    return this.isDesert ? DESERT.name : PRESETS[this.time].name;
   }
   get rainName() {
-    return RAINS[this.rainIndex].name;
+    return this.isDesert ? '晴朗无雨' : RAINS[this.rainIndex].name;
+  }
+
+  setScene(scene) {
+    this.scene = scene;
+    this.cur = structuredClone(this.isDesert ? DESERT : PRESETS[this.time]);
+    this.rain = this.isDesert ? 0 : RAINS[this.rainIndex].v;
+    this.flash = 0;
+    this._pulses.length = 0;
+    this._nextFlash = 12 + Math.random() * 14;
+    this.apply();
+    return this.sceneName;
   }
 
   cycleTime() {
-    this.time = TIMES[(TIMES.indexOf(this.time) + 1) % TIMES.length];
+    if (!this.isDesert) this.time = TIMES[(TIMES.indexOf(this.time) + 1) % TIMES.length];
     return this.timeName;
   }
   cycleRain() {
-    this.rainIndex = (this.rainIndex + 1) % RAINS.length;
+    if (!this.isDesert) this.rainIndex = (this.rainIndex + 1) % RAINS.length;
     return this.rainName;
   }
 
   triggerLightning() {
+    if (this.isDesert) return;
     const base = 0.5 + Math.random() * 0.5;
     const n = 2 + Math.floor(Math.random() * 3);
     let t = 0;
@@ -107,11 +139,11 @@ export class Environment {
   }
 
   update(dt) {
-    const target = PRESETS[this.time];
+    const target = this.isDesert ? DESERT : PRESETS[this.time];
     const k = 1 - Math.exp(-dt / 0.9);
     for (const key of KEYS3) for (let i = 0; i < 3; i++) this.cur[key][i] += (target[key][i] - this.cur[key][i]) * k;
     for (const key of KEYS1) this.cur[key] += (target[key] - this.cur[key]) * k;
-    this.rain += (RAINS[this.rainIndex].v - this.rain) * (1 - Math.exp(-dt / 2.5));
+    this.rain += ((this.isDesert ? 0 : RAINS[this.rainIndex].v) - this.rain) * (1 - Math.exp(-dt / 2.5));
 
     // ---- 闪电：雨够大才会有
     this._nextFlash -= dt;
@@ -131,6 +163,8 @@ export class Environment {
 
   apply() {
     const c = this.cur;
+    G.uDesert.value = this.isDesert ? 1 : 0;
+    G.uSunColor.value.setRGB(1.1, 0.57, 0.26).multiplyScalar(this.isDesert ? 1 : 0);
     G.uSkyTop.value.setRGB(...c.skyTop);
     G.uFogColor.value.setRGB(...c.fog);
     G.uSkyAmb.value.setRGB(...c.skyAmb);

@@ -4,6 +4,7 @@ import { G, shared } from '../core/globals.js';
 import { COMMON, LIGHTING } from '../shaders/common.js';
 import { roadX, roadYaw } from '../core/roadmath.js';
 import { SPECS, PAINTS, buildVehicle } from './vehicles.js';
+import { buildMotorcycle, MOTORCYCLE_SPEC } from './motorcycle.js';
 import { worldMaterial, instancedGeo } from './materials.js';
 import { SPRITE_QUAD } from './props.js';
 
@@ -60,17 +61,22 @@ export class Traffic {
     const kindsOpp = ['sedan', 'suv', 'truck', 'sedan', 'van', 'sedan', 'suv', 'bus', 'sedan', 'sedan', 'suv', 'sedan'];
     const make = (kind, dir, i) => {
       const paint = PAINTS[(i * 5 + (dir > 0 ? 0 : 3)) % PAINTS.length];
-      const mesh = new THREE.Mesh(buildVehicle(kind, paint), carMat);
+      const mesh = new THREE.Mesh(kind === 'motorcycle' ? buildMotorcycle(paint) : buildVehicle(kind, paint), carMat);
       mesh.visible = false;
       this.group.add(mesh);
       return {
-        mesh, kind, spec: SPECS[kind], dir, heavy: kind === 'truck' || kind === 'bus',
+        mesh, kind, spec: kind === 'motorcycle' ? MOTORCYCLE_SPEC : SPECS[kind], dir, heavy: kind === 'truck' || kind === 'bus',
         active: false, u: 0, targetU: 0, z: 0, v: 0, vDes: 20, brake: 0, blocked: 0, blink: 0, cool: rand(2, 8), passCue: false,
         led: i % 3 === 0,
       };
     };
     kindsSame.forEach((k, i) => this.same.push(make(k, 1, i)));
     kindsOpp.forEach((k, i) => this.opp.push(make(k, -1, i)));
+    this.citySame = this.same;
+    this.cityOpp = this.opp;
+    this.desertSame = ['suv', 'sedan', 'motorcycle', 'truck'].map((k, i) => make(k, 1, i));
+    this.desertOpp = ['sedan', 'motorcycle', 'suv'].map((k, i) => make(k, -1, i));
+    this.scene = 'city';
 
     // ---- 车灯光斑（加色混合的公告板）
     this.lights = makeSpriteSet(
@@ -173,10 +179,24 @@ export class Traffic {
     this._sprayList = [];
   }
 
+  setScene(scene, player) {
+    for (const c of [...this.citySame, ...this.cityOpp, ...this.desertSame, ...this.desertOpp]) {
+      c.active = false;
+      c.mesh.visible = false;
+    }
+    this.scene = scene;
+    this.same = scene === 'desert' ? this.desertSame : this.citySame;
+    this.opp = scene === 'desert' ? this.desertOpp : this.cityOpp;
+    this.passby.gain = 0;
+    this.passby.pan = 0;
+    this.reset(player);
+    this.update(0, player, new THREE.Vector3(player.x, 1.2, player.z));
+  }
+
   // 初始时把车撒在自车前后
   reset(player) {
     for (const c of this.same) {
-      for (let tries = 0; tries < 20 && !c.active; tries++) this._spawnSame(c, player, rand(-600, 200));
+      for (let tries = 0; tries < 20 && !c.active; tries++) this._spawnSame(c, player, c.kind === 'motorcycle' ? -95 : rand(-600, 200));
     }
     for (const c of this.opp) {
       for (let tries = 0; tries < 20 && !c.active; tries++) this._spawnOpp(c, player, rand(-900, 150));
@@ -196,7 +216,7 @@ export class Traffic {
   }
 
   _spawnSame(c, player, forceDz) {
-    const lane = c.heavy ? (Math.random() < 0.65 ? 2 : 1) : Math.floor(Math.random() * 3);
+    const lane = c.kind === 'motorcycle' ? 2 : c.heavy ? (Math.random() < 0.65 ? 2 : 1) : Math.floor(Math.random() * 3);
     const vDes = ([27.5, 23.5, 19.5][lane] + rand(-2, 2)) * (c.heavy ? 0.93 : 1);
     const faster = vDes > player.speed + 1.5;
     const dz = forceDz ?? (faster ? rand(170, 255) : -rand(430, 660));
@@ -395,7 +415,8 @@ export class Traffic {
     const push = (x, y, z, r, g, b, dx, dz, lobe, size) => {
       if (n >= L.capacity) return;
       iPos.set([x, y, z], n * 3);
-      iCol.set([r, g, b], n * 3);
+      const intensity = this.scene === 'desert' ? 0.18 : 1;
+      iCol.set([r * intensity, g * intensity, b * intensity], n * 3);
       iDir.set([dx, 0, dz, lobe], n * 4);
       iSize[n] = size;
       n++;
@@ -413,24 +434,29 @@ export class Traffic {
       const rz = -Math.sin(yaw);
       const p = c.mesh.position;
       const s = c.spec;
-      const hl = s.len / 2 + 0.03;
+      const hl = c.kind === 'motorcycle' ? s.tailZ : s.len / 2 + 0.03;
+      const headOffset = c.kind === 'motorcycle' ? -s.headZ : hl;
       const tx = (s.tail[0] + s.tail[1]) / 2;
       const ty = (s.tail[2] + s.tail[3]) / 2;
       const [hx, hy] = s.head;
       const tI = 3.2 + c.brake * 11;
-      for (const side of [-1, 1]) {
+      for (const side of c.kind === 'motorcycle' ? [0] : [-1, 1]) {
         push(p.x - fx * hl + rx * tx * side, ty, p.z - fz * hl + rz * tx * side, tI, tI * 0.045, tI * 0.02, -fx, -fz, 1.2, 0.55);
         const hc = c.led ? [0.86, 0.93, 1.0] : [1.0, 0.9, 0.72];
-        push(p.x + fx * hl + rx * hx * side, hy, p.z + fz * hl + rz * hx * side, hc[0] * 55, hc[1] * 55, hc[2] * 55, fx, fz, 5.0, 1.25);
+        push(p.x + fx * headOffset + rx * hx * side, hy, p.z + fz * headOffset + rz * hx * side, hc[0] * 55, hc[1] * 55, hc[2] * 55, fx, fz, 5.0, c.kind === 'motorcycle' ? 0.7 : 1.25);
         // 转向灯
         if (c.blink && blinkOn && side === (c.blink < 0 ? -1 : 1)) {
           push(p.x - fx * hl + rx * (tx + 0.1) * side, ty, p.z - fz * hl + rz * (tx + 0.1) * side, 9, 4.2, 0.4, -fx, -fz, 0.8, 0.5);
         }
       }
-      if (c.brake > 0.05) push(p.x - fx * (hl - 0.4), s.top, p.z - fz * (hl - 0.4), c.brake * 6, c.brake * 0.25, c.brake * 0.1, -fx, -fz, 1.2, 0.4);
+      if (c.kind === 'motorcycle' && c.blink && blinkOn) {
+        const side = Math.sign(c.blink);
+        push(p.x - fx * hl + rx * 0.24 * side, ty, p.z - fz * hl + rz * 0.24 * side, 9, 4.2, 0.4, -fx, -fz, 0.8, 0.3);
+      }
+      if (c.kind !== 'motorcycle' && c.brake > 0.05) push(p.x - fx * (hl - 0.4), s.top, p.z - fz * (hl - 0.4), c.brake * 6, c.brake * 0.25, c.brake * 0.1, -fx, -fz, 1.2, 0.4);
 
       // 车后拖着的水雾（越往后越大越淡）
-      if (c.dir > 0 && c.v > 6) {
+      if (rain > 0 && c.dir > 0 && c.v > 6) {
         const k = clamp((c.v - 6) / 16, 0, 1) * (0.35 + 0.65 * rain) * (c.heavy ? 1.6 : 1);
         for (let i = 0; i < 6; i++) {
           const d = 1.5 + i * i * 0.85 + i * 1.6;
@@ -443,7 +469,7 @@ export class Traffic {
     for (const c of this.opp) if (c.active) emit(c);
 
     // 自车尾部的水雾（后视镜里能看到）
-    if (player.speed > 6) {
+    if (rain > 0 && player.speed > 6) {
       const k = clamp((player.speed - 6) / 16, 0, 1) * (0.35 + 0.65 * rain);
       for (let i = 0; i < 5; i++) {
         const d = 2.5 + i * i * 0.9 + i * 1.6;

@@ -12,6 +12,9 @@ export const G = {
   uSkyAmb: { value: new THREE.Color(0.1, 0.12, 0.155) },
   uGndAmb: { value: new THREE.Color(0.03, 0.03, 0.035) },
 
+  uDesert: { value: 0 },
+  uSunDir: { value: new THREE.Vector3(-0.22, 0.105, -1).normalize() },
+  uSunColor: { value: new THREE.Color(0, 0, 0) },
   uLampColor: { value: new THREE.Color(1.0, 0.6, 0.28) },
   uWindowGlow: { value: 1 },
 

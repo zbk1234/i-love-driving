@@ -22,6 +22,9 @@ uniform float uFogDensity;
 uniform vec3 uSkyTop;
 uniform vec3 uSkyAmb;
 uniform vec3 uGndAmb;
+uniform float uDesert;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
 uniform vec3 uLampColor;
 uniform float uWindowGlow;
 uniform vec3 uHeadPos;
@@ -113,7 +116,10 @@ vec3 shadeSurface(vec3 albedo, vec3 N, vec3 V, vec3 P, float gloss, float shin, 
   lampLight(P, N, V, shin, ld, ls);
   float hb = headBeam(P);
   vec3 toHead = normalize(uHeadPos - P);
-  vec3 col = albedo * (amb + ld + uHeadColor * hb * max(dot(N, toHead), 0.0));
+  vec3 sunlight = uSunColor * max(dot(N, uSunDir), 0.0);
+  vec3 col = albedo * (amb + ld + sunlight + uHeadColor * hb * max(dot(N, toHead), 0.0));
+  vec3 sunHalf = normalize(uSunDir + V);
+  col += uSunColor * gloss * pow(max(dot(N, sunHalf), 0.0), shin) * 0.22;
   // 逆反射材料（标志牌、车牌）：把大灯的光原路打回来
   col += albedo * uHeadColor * hb * retro;
   // 湿表面的菲涅尔反光

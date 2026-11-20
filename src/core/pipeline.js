@@ -294,20 +294,22 @@ export class Pipeline {
     this._mark('mirror');
 
     // ---- 2. 路面倒影
-    this._updateReflectionCamera(camera);
-    G.uReflPass.value = 1;
-    r.setRenderTarget(this.rtRefl);
-    r.render(world, this.reflCam);
-    G.uReflPass.value = 0;
-    this._mark('reflection');
-    this._down(this.rtRefl, this.rtReflQ);
-    this._blur(this.rtReflQ, this.rtReflT, 0.0, 2.4);
-    this._blur(this.rtReflT, this.rtReflB, 0.0, 6.5);
-    this._blur(this.rtReflB, this.rtReflT, 1.3, 0.0);
-    ru.tRefl.value = this.rtRefl.texture;
-    ru.tReflBlur.value = this.rtReflT.texture;
-    ru.uReflMatrix.value.copy(this.reflMatrix);
-    ru.uReflOn.value = 1;
+    if (G.uDesert.value < 0.5) {
+      this._updateReflectionCamera(camera);
+      G.uReflPass.value = 1;
+      r.setRenderTarget(this.rtRefl);
+      r.render(world, this.reflCam);
+      G.uReflPass.value = 0;
+      this._mark('reflection');
+      this._down(this.rtRefl, this.rtReflQ);
+      this._blur(this.rtReflQ, this.rtReflT, 0.0, 2.4);
+      this._blur(this.rtReflT, this.rtReflB, 0.0, 6.5);
+      this._blur(this.rtReflB, this.rtReflT, 1.3, 0.0);
+      ru.tRefl.value = this.rtRefl.texture;
+      ru.tReflBlur.value = this.rtReflT.texture;
+      ru.uReflMatrix.value.copy(this.reflMatrix);
+      ru.uReflOn.value = 1;
+    }
     this._mark('reflBlur');
 
     // ---- 3. 外景
