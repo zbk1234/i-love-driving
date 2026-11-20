@@ -38,41 +38,42 @@ export function glassNormal(gx, gy, out = new THREE.Vector3()) {
   return out.crossVectors(_a, du).normalize();
 }
 
-// 把车模的玻璃网格（车体局部坐标，一个网格里包含全部车窗）拆成 前 / 左 / 右 / 后 四组，
+// 按车模部件把玻璃网格（车体局部坐标）分成 前 / 左 / 右 / 后 四组，
 // 并给每个顶点算出玻璃坐标 aG：x 永远指向「从车内看」的屏幕右侧，y 沿玻璃向上，单位米。
 // 左前门玻璃的顶点另有 aWin = 1（能升降），它沿玻璃斜面向下的方向记在 left.userData.down。
 export function createGlassGeometries(source) {
-  const pos = source.attributes.position;
-  const index = source.index;
-  const triCount = (index ? index.count : pos.count) / 3;
   const groups = { front: [], left: [], right: [], rear: [] };
+  const movable = { front: [], left: [], right: [], rear: [] };
   const nSum = { front: new THREE.Vector3(), left: new THREE.Vector3(), right: new THREE.Vector3(), rear: new THREE.Vector3() };
   const n = new THREE.Vector3();
-  for (let i = 0; i < triCount; i++) {
-    const ia = index ? index.getX(i * 3) : i * 3;
-    const ib = index ? index.getX(i * 3 + 1) : i * 3 + 1;
-    const ic = index ? index.getX(i * 3 + 2) : i * 3 + 2;
-    _a.fromBufferAttribute(pos, ia);
-    _b.fromBufferAttribute(pos, ib);
-    _c.fromBufferAttribute(pos, ic);
-    n.subVectors(_b, _a).cross(_c.clone().sub(_a));
-    const area = n.length();
-    if (area < 1e-12) continue;
-    // 侧窗的法线基本是横向的；前后风挡再按在车头还是车尾区分
-    const side = Math.abs(n.x) > 0.6 * area;
-    const cx = (_a.x + _b.x + _c.x) / 3;
-    const cz = (_a.z + _b.z + _c.z) / 3;
-    const key = side ? (cx < 0 ? 'left' : 'right') : cz < 0 ? 'front' : 'rear';
-    groups[key].push(_a.x, _a.y, _a.z, _b.x, _b.y, _b.z, _c.x, _c.y, _c.z);
-    if (n.y < 0) n.negate(); // 车窗都朝上倾，统一成朝外的那一面
-    nSum[key].add(n);
+  for (const part of source) {
+    const pos = part.geometry.attributes.position;
+    const index = part.geometry.index;
+    const triCount = (index ? index.count : pos.count) / 3;
+    for (let i = 0; i < triCount; i++) {
+      const ia = index ? index.getX(i * 3) : i * 3;
+      const ib = index ? index.getX(i * 3 + 1) : i * 3 + 1;
+      const ic = index ? index.getX(i * 3 + 2) : i * 3 + 2;
+      _a.fromBufferAttribute(pos, ia);
+      _b.fromBufferAttribute(pos, ib);
+      _c.fromBufferAttribute(pos, ic);
+      n.subVectors(_b, _a).cross(_c.clone().sub(_a));
+      if (n.lengthSq() < 1e-24) continue;
+      // 倒角法线会偏向前后方，归属必须跟随整块玻璃；仅共用网格的后三角窗按左右拆分。
+      const key = part.side === 'side' ? (_a.x + _b.x + _c.x < 0 ? 'left' : 'right') : part.side;
+      groups[key].push(_a.x, _a.y, _a.z, _b.x, _b.y, _b.z, _c.x, _c.y, _c.z);
+      const win = part.movable ? 1 : 0;
+      movable[key].push(win, win, win);
+      if (n.y < 0) n.negate(); // 车窗都朝上倾，统一成朝外的那一面
+      nSum[key].add(n);
+    }
   }
 
   const out = {};
   for (const key of Object.keys(groups)) {
     const p = groups[key];
     const g = new Float32Array((p.length / 3) * 2);
-    const win = new Float32Array(p.length / 3);
+    const win = new Float32Array(movable[key]);
     // 沿玻璃向上的距离 = 高度差 / 玻璃的倾斜程度
     const ny = nSum[key].normalize().y;
     const rise = Math.sqrt(Math.max(1 - ny * ny, 1e-4));
@@ -89,7 +90,6 @@ export function createGlassGeometries(source) {
       } else {
         g[j] = key === 'left' ? -z : key === 'right' ? z : -x;
         g[j + 1] = (y - yMin) / rise;
-        if (key === 'left' && g[j] > WINDOW.X0) win[j / 2] = 1;
       }
     }
     const geo = new THREE.BufferGeometry();

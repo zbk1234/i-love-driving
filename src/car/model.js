@@ -12,7 +12,15 @@ import { CAR, CAN } from '../config.js';
 // 分拣靠的是模型里的节点名和材质名，换别的模型时改这几张表就行。
 
 // 车窗：前挡、四扇门玻璃、两块后三角窗（同一个网格）、尾门玻璃。全景天窗不算，当成深色顶棚
-const NODES_GLASS = new Set(['Body010', 'DoorFrLeft002', 'DoorFrRight002', 'DoorRearLeft001', 'DoorRearRight001', 'Body020', 'DoorBack012']);
+const NODES_GLASS = new Map([
+  ['Body010', 'front'],
+  ['DoorFrLeft002', 'left'],
+  ['DoorFrRight002', 'right'],
+  ['DoorRearLeft001', 'left'],
+  ['DoorRearRight001', 'right'],
+  ['Body020', 'side'],
+  ['DoorBack012', 'rear'],
+]);
 // 方向盘：轮缘、轮辐、中间的饰板和按键（后面那根横着的拨杆座不跟着转）
 const NODES_WHEEL = new Set(['Dash002', 'Dash015', 'Dash019', 'Dash020']);
 // 四个车轮整个在车身底下，车内车外都看不到
@@ -42,14 +50,14 @@ export async function loadCarModel() {
     const geometry = o.geometry;
     geometry.applyMatrix4(o.matrixWorld);
     const part = { geometry, material: o.material, name: o.material.name, node };
-    if (NODES_GLASS.has(node)) glass.push(geometry);
+    if (NODES_GLASS.has(node)) glass.push({ geometry, side: NODES_GLASS.get(node), movable: node === 'DoorFrLeft002' });
     else if (part.name === MAT_MIRROR) mirrors.push(geometry);
     else if (part.name === MAT_SCREEN) Object.assign(model.screens, splitScreens(geometry));
     else if (NODES_WHEEL.has(node)) model.wheel.push(part);
     else model.body.push(part);
   });
   if (!glass.length || !mirrors.length) throw new Error('车模里没找到车窗或后视镜');
-  model.glass = mergePositions(glass);
+  model.glass = glass;
   model.mirrors = mergePositions(mirrors);
   model.can = placeCan(can.scene);
   return model;
@@ -79,7 +87,7 @@ export function trianglePositions(geometry) {
   return new Float32Array(g.attributes.position.array);
 }
 
-// 几块网格只取顶点位置拼成一个（车窗、镜片只用得到位置）
+// 镜片只用得到位置，取出顶点拼成一个网格
 function mergePositions(list) {
   const arrays = list.map(trianglePositions);
   const out = new Float32Array(arrays.reduce((n, a) => n + a.length, 0));
